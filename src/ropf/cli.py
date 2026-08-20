@@ -4,7 +4,7 @@
                           and write the three artifacts
     ropf ladder CONFIG    run the ladder study, one combo per invocation
     ropf keys             print the configuration key table
-    ropf fetch [CASE...]  download the ACTIVSg cases into data/
+    ropf data DIR         install the ACTIVSg cases and dynamics from DIR
 
 THE CONFIG FILE IS THE ONLY PLACE A STUDY PARAMETER IS SET.  No command-line
 flag overrides a value in it.  The flags that exist change what is printed
@@ -103,17 +103,16 @@ def _parser() -> argparse.ArgumentParser:
                         help="write the transcript to the file only")
     ladder.set_defaults(handler=_ladder)
 
-    fetch = sub.add_parser(
-        "fetch", help="download the ACTIVSg cases into data/",
-        description="Download and unpack the test systems the study uses.")
-    fetch.add_argument("cases", metavar="CASE", nargs="*",
-                       help="rung names, e.g. activs200; default is all of them")
-    fetch.add_argument("--list", action="store_true",
-                       help="list the known cases and stop")
-    fetch.add_argument("--from", dest="source_dir", metavar="DIR",
-                       help="take the cases AND their dynamics from local "
-                            "ACTIVSg distributions already downloaded into DIR")
-    fetch.set_defaults(handler=_fetch)
+    data = sub.add_parser(
+        "data", help="install the ACTIVSg cases and dynamics into data/",
+        description=("Copy each rung's case, .dyr and .aux out of the TAMU "
+                     "distributions in DIR. There is no downloader: Texas A&M "
+                     "gates them behind a terms page, so this is a copy."))
+    data.add_argument("source", metavar="DIR",
+                      help="directory holding ACTIVSg200.zip and the rest")
+    data.add_argument("rungs", metavar="RUNG", nargs="*",
+                      help="rung names, e.g. texas2k; default is all six")
+    data.set_defaults(handler=_data)
 
     return parser
 
@@ -304,21 +303,13 @@ def _typename(declared) -> str:
 
 
 ###############################################################################
-# ropf fetch
+# ropf data
 ###############################################################################
 
 
-def _fetch(args: argparse.Namespace) -> int:
-    from .data import fetch
-
-    if args.list:
-        for name, source in sorted(fetch.SOURCES.items()):
-            print(f"  {name:<12}  {source.description}")
-        return 0
-    if args.source_dir:
-        return fetch.adopt(args.source_dir, args.cases or None,
-                           log=sys.stdout.write)
-    return fetch.fetch(args.cases or None, log=sys.stdout.write)
+def _data(args: argparse.Namespace) -> int:
+    from .data import cases
+    return cases.install(args.source, args.rungs or None, log=sys.stdout.write)
 
 
 if __name__ == "__main__":

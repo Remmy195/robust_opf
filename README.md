@@ -26,32 +26,28 @@ committed: the distributions run to about 875 MB. One small case,
 `case_ACTIVSg200.m`, is tracked under [tests/fixtures/](tests/fixtures/) so the
 test suite runs on a bare clone.
 
-Texas A&M serves them from a landing page that requires accepting terms, so
-nothing can be retrieved unattended. Download the six distributions by hand,
-then adopt them:
+There is no downloader. Texas A&M serves these from a landing page that
+requires accepting terms, so nothing can be retrieved unattended -- download the
+six distributions by hand, then install them:
 
 ```bash
-ropf fetch --list           # the six rungs
-ropf fetch --from ~/ACTIVSg # take cases AND dynamics from the archives
-ropf fetch                  # verify what is present, report what is missing
+ropf data ~/ACTIVSg           # all six rungs
+ropf data ~/ACTIVSg texas2k   # one of them
 ```
 
-`--from` reads the distributions as TAMU ships them -- `ACTIVSg200.zip` and the
-like, or an unpacked directory of the same name -- and writes three files per
-rung into `data/`: the MATPOWER case, the `.dyr` machine records the frequency
-screen needs, and the `.aux` participation factors. The dynamics ship *inside
-the same archives as the cases*, so taking both at once is what makes `data/`
-self-contained; a tree built from case files alone leaves Section 4.2 with
-nothing to read.
+That copies three files per rung into `data/`: the MATPOWER case, the `.dyr`
+machine records the Section 4.2 frequency screen reads, and the `.aux`
+participation factors. All three live in the *same* distribution, which is why
+this is a command and not a line of documentation saying `unzip` -- taking only
+the case leaves the frequency screen with nothing to read. It also absorbs the
+two ways the distributions are not uniform: ACTIVSg70k ships unpacked rather
+than as a zip, and ACTIVSg25k names its `.dyr` without the `_dynamics` the
+other five carry, which is rewritten so nothing downstream has to know.
 
-Every rung declares the SHA-256 of the case it must produce, and **it is checked
-before anything is written**. The ACTIVSg distributions are not versioned, so
-two archives can hold different vintages of `case_ACTIVSg<n>.m` under the same
-name -- without the digest a study could be reproduced against a different case
-and report it as the same one, and without checking *first* one command could
-silently swap the case an existing tree was built on. A mismatched case is
-reported and skipped, leaving the existing file alone. Run `ropf fetch` with no
-arguments over an existing `data/` to check it.
+Which case a result came from is recorded per run, not asserted up front:
+`solution_summary.json` carries the SHA-256 of the case that run actually read.
+The ACTIVSg distributions are not versioned, so that digest is what makes "the
+same case" checkable months later.
 
 ## Running a solve
 
@@ -137,9 +133,7 @@ would make the dispatches incomparable:
 ### What the campaign needs that the cases do not carry
 
 The frequency screen of Section 4.2 needs each rung's PSS/E `.dyr` (and `.aux`
-for AGC participation). `ropf fetch --from` puts both in `data/` beside the
-cases, under the names the reader looks for -- including for ACTIVSg25k, which
-ships its `.dyr` without the `_dynamics` the other five use -- so
+for AGC participation). `ropf data` puts both in `data/` beside the cases, so
 `dynamics_search = data` is correct and needs no path outside the repository.
 
 Its four constants -- `f0_hz`, `rocof_max_hz_s`, `f_under_hz` and the load
@@ -171,7 +165,7 @@ src/ropf/
   log.py            the run transcript
   counterfactual/   Section 4: disfigurements, the frequency screen, (D)
   study/ladder.py   the ladder study driver: combos, claims, the campaign
-  data/             fetching and verifying the ACTIVSg cases
+  data/cases.py     the six rungs, and installing them from the distributions
 modfiles/           master.mod, master_ac.mod, postevent.mod
 ```
 

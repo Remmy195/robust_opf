@@ -51,7 +51,7 @@ from ..algorithm import STAGES, WEIGHT_GRID
 from ..config import ConfigError, RunConfig, _build, parse_keyfile
 from ..counterfactual import disfigure, dynamics, frequency, postevent
 from ..counterfactual.postevent import Disfigurement, PostEventParams
-from ..data.fetch import DATA_DIR, LADDER, SOURCES
+from ..data.cases import DATA_DIR, LADDER, RUNGS
 from ..log import Log
 from ..model import SolverConfig
 from ..network import Network, read_matpower
@@ -161,7 +161,7 @@ class LadderConfig:
 
     def __post_init__(self) -> None:
         for rung in self.rungs:
-            if rung not in SOURCES:
+            if rung not in RUNGS:
                 raise ConfigError(
                     f"rungs names {rung!r}, which is not a known rung; known: "
                     f"{', '.join(LADDER)}")
@@ -283,10 +283,10 @@ class Combo:
     @property
     def distribution(self) -> str:
         """The TAMU distribution name, e.g. ACTIVSg2000.  Not the rung name."""
-        return SOURCES[self.rung].rung
+        return RUNGS[self.rung].dist
 
     def case_path(self, data_dir: str = DATA_DIR) -> str:
-        return os.path.join(data_dir, SOURCES[self.rung].case)
+        return os.path.join(data_dir, RUNGS[self.rung].case)
 
 
 def combos(config: LadderConfig) -> List[Combo]:
@@ -578,8 +578,9 @@ def run_combo(config: LadderConfig, combo: Combo,
     case = combo.case_path()
     if not os.path.isfile(case):
         raise FileNotFoundError(
-            f"{combo.rung}: {case} is not there. Run `ropf fetch "
-            f"{combo.rung}` to see how to obtain it.")
+            f"{combo.rung}: {case} is not there. Install it with "
+            f"`ropf data DIR {combo.rung}`, where DIR holds the TAMU "
+            f"distributions.")
 
     started = time.time()
     network = read_matpower(case, log)
