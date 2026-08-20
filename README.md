@@ -36,20 +36,55 @@ for z in ~/ACTIVSg/ACTIVSg*.zip; do
 done
 ```
 
-ACTIVSg70k ships as a directory rather than a zip; copy the same three files
-out of it. Nothing renames anything: the reader already knows that ACTIVSg25k
-calls its dynamics file `ACTIVSg25k.dyr` where the other five use
-`ACTIVSg<n>_dynamics.dyr`, and will read either.
+That covers five rungs; ACTIVSg70k ships as a directory rather than a zip, so
+copy the same three files out of it. It also pulls in a few `*_contingencies.aux`
+and `*_dynamics.aux` the study does not read, which are harmless.
+
+Nothing renames anything. The reader already knows that ACTIVSg25k calls its
+dynamics file `ACTIVSg25k.dyr` where the other five use
+`ACTIVSg<n>_dynamics.dyr`, and reads either.
 
 Point `dynamics_search` at `data` and the study is self-contained. It can also
-be pointed straight at the directory holding the archives -- the `.dyr` and
-`.aux` are read out of a zip without unpacking it -- in which case only the
+be pointed straight at the directory holding the archives — the `.dyr` and
+`.aux` are read out of a zip without unpacking it — in which case only the
 `.m` cases need to be extracted.
 
 Which case a result came from is recorded per run, not asserted up front:
 `solution_summary.json` carries the SHA-256 of the case that run actually read.
 The ACTIVSg distributions are not versioned, so that digest is what makes "the
 same case" checkable months later.
+
+## The three functionals
+
+A run picks one. The config key is `metric`.
+
+| `metric` | eq | what it measures |
+| --- | --- | --- |
+| `max_active_flow` | (4b) | `max_e \|P_e\|` — the loading of the most heavily used line |
+| `joule_loss_max` | (4c) | `max_e r_e P_e²` — the ohmic heating of the worst line |
+| `bus_flow_sum_agg` | (4a) | `max_i Σ_{(m,n)∈E_i} \|P_mn\|` — the power crossing the busiest bus |
+
+**φ^bus is the incident line flows and nothing else** — no generation term and
+no demand term. Both omissions are deliberate and worth stating, because the
+obvious reading of "the power at a bus" includes them:
+
+* **generation is already in the flows.** Kirchhoff at bus *i* says what a unit
+  injects there leaves through the incident lines, so a `Σ_g |P_g|` term counts
+  the same power twice and weights a generator bus against a transit bus by
+  where the metering happens rather than by how much power moves;
+* **demand is fixed data.** `P_di` is identical at every dispatch and every
+  λ, so it cannot be traded against anything. Carried in `f_i` it only adds a
+  per-bus offset that reorders the argmax, making the functional report the most
+  heavily *loaded* bus rather than the busiest one, and putting a constant into
+  the cut that the master can never move.
+
+`f_i` sums magnitudes, so flows do not cancel: a degree-2 bus carrying *P*
+through it scores `2|P|`, which is correct rather than a symptom — the power
+crosses two lines.
+
+The signs enter only in the cut, frozen at the incumbent. That is what makes
+eq (6c) a subgradient inequality of `f_i`, hence a minorant of φ^bus, hence
+eq (11).
 
 ## Running a solve
 
@@ -103,7 +138,7 @@ Section 3.4 is a transfer, not a re-separation.
 
 ## The ladder study
 
-Section 5 runs the whole grid: six rungs x three functionals x three stages,
+Section 5 runs the whole grid: six rungs × three functionals × three stages,
 and the Section 4 counterfactual campaign against every dispatch each of those
 produces.
 
@@ -114,7 +149,7 @@ ropf ladder configs/ladder.conf --all       # keep going until none left
 ropf ladder configs/ladder.conf --status    # the progress table
 ```
 
-The unit of work is one **combo** -- one (rung, metric, stage) triple. One
+The unit of work is one **combo** — one (rung, metric, stage) triple. One
 invocation claims one combo, runs its frontier and its campaign, writes
 `campaign.json`/`campaign.csv` beside the three frontier artifacts, and marks
 the directory `DONE`. Because the combos are independent, that gives both
@@ -122,6 +157,11 @@ parallelism and resume for free: run the command in as many shells as you have
 cores, and run it again after a crash. A combo is claimed by creating
 `.claim/` inside its directory, which is atomic, so two processes racing for
 the same combo cannot both get it.
+
+Each dispatch is evaluated against two classes of disfigurement (Section 4.1) —
+`gen_k`, disabling the K highest-output units, and `walk_k`/`walk_draws`,
+random-walk component sets — and each survivor is redispatched by model (D)
+after clearing the frequency screen.
 
 Two things the campaign fixes once and never revisits, because varying them
 would make the dispatches incomparable:
@@ -139,8 +179,8 @@ for AGC participation). These ship inside the same archives as the cases, so
 unpacking as above puts them beside the cases and `dynamics_search = data` is
 correct.
 
-Its four constants -- `f0_hz`, `rocof_max_hz_s`, `f_under_hz` and the load
-damping -- are **not defaulted by the code**, and the config file inherits that
+Its four constants — `f0_hz`, `rocof_max_hz_s`, `f_under_hz` and the load
+damping — are **not defaulted by the code**, and the config file inherits that
 refusal. They are grid-code quantities: supplying a plausible number would mean
 reporting it as if it were data. The damping must additionally name its base,
 because the textbook 1-2 %/% figure is on the *load* base and the swing
@@ -148,12 +188,22 @@ equation needs the *system* base; the two differ by the load-to-baseMVA ratio
 (671 on ACTIVSg2000) and getting it wrong fails quietly, with the nadir simply
 coming out at the wrong depth.
 
+`beta`, the emergency rating factor of eq (6e), is **an assumption and not
+data**: `rateB` and `rateC` are zero across every ACTIVSg case, so no case
+states one. It defaults to 1.2, a 20% short-term overload, because leaving it
+at 1 makes (D) redispatch a post-event system against *normal* ratings and so
+overstates lost load by forbidding exactly the overload an emergency rating
+exists to permit. Like the four screen constants it is marked `CITE` in
+[configs/ladder.conf](configs/ladder.conf) and wants a source before
+publication. `postevent.mod` keeps its own default at 1, so a caller that never
+sets it is not silently handed an overload.
+
 ### Threads
 
 Set `threads` to the **physical** core count, not the logical one. On a
 2-socket box with 16 physical cores and 32 logical CPUs, letting Gurobi take
-its default cost 5.7x on a single model (D) evaluation at the 70k rung -- 64.7s
-against 11.4s -- for an answer agreeing to nine significant figures.
+its default cost 5.7× on a single model (D) evaluation at the 70k rung — 64.7s
+against 11.4s — for an answer agreeing to nine significant figures.
 
 ## Layout
 
