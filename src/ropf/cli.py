@@ -2,15 +2,21 @@
 
     ropf solve CONFIG     sweep the weight grid for one case, metric and stage,
                           and write the three artifacts
+    ropf ladder CONFIG    run the ladder study, one combo per invocation
     ropf keys             print the configuration key table
     ropf fetch [CASE...]  download the ACTIVSg cases into data/
 
 THE CONFIG FILE IS THE ONLY PLACE A STUDY PARAMETER IS SET.  No command-line
-flag overrides a value in it.  The two flags that exist -- ``--quiet`` and
-``--dry-run`` -- change what is printed and whether anything is solved, and
-neither can change a number.  An override would mean the same config file
-producing two different studies depending on how it was invoked, and the output
-directory could no longer be read as a record of what was run.
+flag overrides a value in it.  The flags that exist change what is printed
+(``--quiet``, ``--status``), whether anything is solved (``--dry-run``), which
+of the declared work is done now (``--all``, ``--reclaim``) -- and none of them
+can change a number.  An override would mean the same config file producing two
+different studies depending on how it was invoked, and the output directory
+could no longer be read as a record of what was run.
+
+``--reclaim`` is the case worth naming: it acts on claims older than
+``stale_claim_hours``, and that threshold is a number, so it lives in the config
+file.  The flag decides whether to act, not what the threshold is.
 """
 
 from __future__ import annotations
@@ -75,6 +81,27 @@ def _parser() -> argparse.ArgumentParser:
     keys = sub.add_parser("keys", help="print the configuration key table",
                           description="Every key a configuration file may set.")
     keys.set_defaults(handler=_keys)
+
+    ladder = sub.add_parser(
+        "ladder", help="run the ladder study, one combo per invocation",
+        description=("Claim one (rung, metric, stage) combo, run its frontier "
+                     "and its Section 4 campaign, and exit. Run it again -- or "
+                     "in several shells at once -- to work through the rest."))
+    ladder.add_argument("config", metavar="CONFIG",
+                        help="ladder configuration file")
+    ladder.add_argument("--all", action="store_true",
+                        help="keep claiming combos until none are left")
+    ladder.add_argument("--status", action="store_true",
+                        help="print the progress table and stop")
+    ladder.add_argument("--dry-run", action="store_true",
+                        help="report the combos and the campaign size, and "
+                             "solve nothing")
+    ladder.add_argument("--reclaim", action="store_true",
+                        help="release claims older than stale_claim_hours "
+                             "before starting")
+    ladder.add_argument("--quiet", action="store_true",
+                        help="write the transcript to the file only")
+    ladder.set_defaults(handler=_ladder)
 
     fetch = sub.add_parser(
         "fetch", help="download the ACTIVSg cases into data/",
@@ -157,6 +184,86 @@ def _report_config(config: RunConfig, outdir: str, emit) -> None:
     emit(f" solvers       {config.solver_dc} (DC), {config.solver_ac} (AC),"
          f" {config.time_limit_s:g}s each\n")
     emit(f" output        {outdir}\n")
+
+
+###############################################################################
+# ropf ladder
+###############################################################################
+
+
+def _ladder(args: argparse.Namespace) -> int:
+    from .study import ladder as ladder_module
+
+    config = ladder_module.read_ladder_config(args.config)
+    todo = ladder_module.combos(config)
+
+    if args.status:
+        rows = ladder_module.status_rows(config)
+        width = max(len(r["combo"]) for r in rows)
+        for row in rows:
+            age = ("" if row["claim_age_h"] is None
+                   else f"  claimed {row['claim_age_h']:.1f}h ago")
+            print(f"  {row['combo']:<{width}}  {row['state']:<8}{age}")
+        tally = {}
+        for row in rows:
+            tally[row["state"]] = tally.get(row["state"], 0) + 1
+        print("\n  " + ", ".join(f"{n} {state}"
+                                 for state, n in sorted(tally.items())))
+        return 0
+
+    if args.dry_run:
+        per = config.evaluations_per_combo()
+        print(f"  {len(todo)} combos: "
+              f"{len(config.rungs)} rungs x {len(config.metrics)} metrics "
+              f"x {len(config.stages)} stages")
+        for combo in todo:
+            print(f"    {combo.name}")
+        print(f"\n  weight grid       {len(config.weight_grid)} points")
+        if config.campaign:
+            print(f"  disfigurements    {config.n_disfigurements} "
+                  f"({len(config.gen_k)} top-K + "
+                  f"{len(config.walk_k)}x{config.walk_draws} walks)")
+            print(f"  gamma             {len(config.gamma)} "
+                  f"({', '.join(f'{g:g}' for g in config.gamma)})")
+            print(f"  evaluations       {per:,} per combo, "
+                  f"{per * len(todo):,} over the ladder")
+        else:
+            print("  campaign          off; the frontier only")
+        print(f"  output            {config.outdir}")
+        return 0
+
+    if args.reclaim:
+        ladder_module.reclaim_stale(config, sys.stdout.write)
+
+    ran = 0
+    while True:
+        combo = ladder_module.next_combo(config, sys.stdout.write)
+        if combo is None:
+            if ran == 0:
+                print("  nothing left to claim; every combo is done or "
+                      "running")
+            else:
+                print(f"  ran {ran} combo(s); nothing left to claim")
+            return 0
+
+        directory = ladder_module.combo_dir(config, combo)
+        os.makedirs(directory, exist_ok=True)
+        with Log(os.path.join(directory, TRANSCRIPT),
+                 echo=not args.quiet) as log:
+            log.section(f"ropf {__version__}: {combo.name}")
+            try:
+                ladder_module.run_combo(config, combo, log)
+            except Exception as exc:
+                # The claim is released so the combo is retried rather than
+                # looking permanently taken by a process that is gone.
+                ladder_module.release(directory)
+                log(f"\n {combo.name} FAILED: {type(exc).__name__}: {exc}\n")
+                sys.stderr.write(f"{combo.name} failed: {exc}\n")
+                return 1
+            log(f"\n {combo.name} done in {log.elapsed_s:.1f}s\n")
+        ran += 1
+        if not args.all:
+            return 0
 
 
 ###############################################################################

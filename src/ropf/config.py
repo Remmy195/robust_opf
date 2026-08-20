@@ -86,6 +86,10 @@ class RunConfig:
     #: Solver for (M^ac).
     solver_ac: str = "knitro"
     time_limit_s: float = 3600.0
+    #: Thread count, for whichever solver is in use.  Set it to the PHYSICAL
+    #: core count, not the logical one: a thread per logical cpu made a single
+    #: (D) evaluation on ACTIVSg70k 5.7x slower for the same answer.  See
+    #: `ropf.model.SolverConfig.gurobi_threads`, which carries the measurement.
     threads: int = 40
     #: Let the solver print its own log.  Off by default: at 70,000 buses the
     #: solver's output is larger than everything else the run writes together.
@@ -138,12 +142,14 @@ class RunConfig:
         return SolverConfig(name=self.solver_dc,
                             time_limit_s=self.time_limit_s,
                             knitro_threads=self.threads,
+                            gurobi_threads=self.threads,
                             verbose=self.solver_verbose)
 
     def ac_solver(self) -> SolverConfig:
         return SolverConfig(name=self.solver_ac,
                             time_limit_s=self.time_limit_s,
                             knitro_threads=self.threads,
+                            gurobi_threads=self.threads,
                             verbose=self.solver_verbose)
 
     @property
@@ -169,12 +175,15 @@ KEYS = tuple(f.name for f in fields(RunConfig))
 ###############################################################################
 
 
-def read_config(path: str) -> RunConfig:
-    """Parse a configuration file into a `RunConfig`.
+def parse_keyfile(path: str, cls: type) -> Dict[str, Any]:
+    """Parse ``key = value`` lines into keyword arguments for `cls`.
 
-    Raises `ConfigError` on an unknown key, a duplicate key, a line that is not
-    ``key = value``, or a value the field's type will not accept.
+    The two refusals live here and nowhere else, so every configuration file
+    this study reads -- a run and the ladder alike -- rejects an unknown key
+    and a duplicate key on the same terms.  `cls` is any dataclass whose field
+    list is its key table.
     """
+    keys = tuple(f.name for f in fields(cls))
     try:
         with open(path, "r") as handle:
             lines = handle.readlines()
@@ -193,9 +202,9 @@ def read_config(path: str) -> RunConfig:
         key, _, value = line.partition("=")
         key, value = key.strip(), value.strip()
 
-        if key not in KEYS:
+        if key not in keys:
             raise ConfigError(f"{path}:{lineno}: unknown key {key!r}"
-                              + _suggest(key))
+                              + _suggest(key, keys))
         if key in seen:
             raise ConfigError(
                 f"{path}:{lineno}: {key!r} is already set on line {seen[key]}. "
@@ -203,34 +212,45 @@ def read_config(path: str) -> RunConfig:
                 f"neither is taken; delete one.")
 
         seen[key] = lineno
-        values[key] = _convert(key, value, path, lineno)
+        values[key] = _convert(key, value, path, lineno, cls)
 
-    config = _build(values, path)
+    return values
+
+
+def read_config(path: str) -> RunConfig:
+    """Parse a configuration file into a `RunConfig`.
+
+    Raises `ConfigError` on an unknown key, a duplicate key, a line that is not
+    ``key = value``, or a value the field's type will not accept.
+    """
+    config = _build(parse_keyfile(path, RunConfig), path, RunConfig)
     if config.case:
         config.case = resolve_case(config.case, os.path.dirname(
             os.path.abspath(path)))
     return config
 
 
-def _suggest(key: str) -> str:
-    close = difflib.get_close_matches(key, KEYS, n=3, cutoff=0.6)
+def _suggest(key: str, keys: Sequence[str] = None) -> str:
+    keys = tuple(keys) if keys is not None else KEYS
+    close = difflib.get_close_matches(key, keys, n=3, cutoff=0.6)
     if close:
         return f"; did you mean {', '.join(repr(c) for c in close)}?"
-    return f". Known keys: {', '.join(KEYS)}"
+    return f". Known keys: {', '.join(keys)}"
 
 
-def _build(values: Dict[str, Any], path: str) -> RunConfig:
+def _build(values: Dict[str, Any], path: str, cls: type = RunConfig) -> Any:
     try:
-        return RunConfig(**values)
+        return cls(**values)
     except ConfigError:
         raise
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"{path}: {exc}") from exc
 
 
-def _convert(key: str, value: str, path: str, lineno: int) -> Any:
+def _convert(key: str, value: str, path: str, lineno: int,
+             cls: type = RunConfig) -> Any:
     """Coerce one value to the declared type of its field."""
-    hints = typing.get_type_hints(RunConfig)
+    hints = typing.get_type_hints(cls)
     declared = hints[key]
     where = f"{path}:{lineno}: {key} = {value!r}"
 

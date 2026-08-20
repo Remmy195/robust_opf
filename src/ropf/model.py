@@ -70,6 +70,33 @@ class SolverConfig:
     time_limit_s: float = 3600.0
     #: Gurobi LP method: primal, dual, barrier, concurrent, or auto.
     gurobi_method: Optional[str] = None
+    #: Crossover after barrier.  0 disables it and returns the interior point.
+    #: Rarely the right knob -- see `gurobi_threads`, which was the actual
+    #: cause of the slow (D) solves at the top rung.  Disabling crossover also
+    #: fixes those, but it changes what the answer IS: without crossover the
+    #: solution is an interior point, so where the LP has many optima the shed
+    #: is spread across them rather than concentrated at a vertex.  The total
+    #: shed and the cost are unaffected; a per-bus shed pattern is, and should
+    #: not then be read as THE pattern.
+    gurobi_crossover: Optional[int] = None
+    #: Gurobi thread count.  None leaves it to the solver, which is NOT a safe
+    #: default on a hyperthreaded box.
+    #:
+    #: MEASURED, ACTIVSg70k, one (D) evaluation on a 2-socket box with 16
+    #: physical cores and 32 logical CPUs:
+    #:
+    #:     Gurobi default (32 threads)          64.7 s
+    #:     16 threads                           11.4 s
+    #:     32 threads, crossover off            10.6 s
+    #:
+    #: All three agree on lost load to nine significant figures and give an
+    #: identical objective, so this is 5.7x of wall clock for nothing.  Letting
+    #: the solver default means letting it take a thread per LOGICAL cpu, and
+    #: the second thread on a core has no second floating-point unit to run on;
+    #: the barrier ends up contending with itself across two NUMA nodes.  Set
+    #: this to the PHYSICAL core count.  It costs nothing at the small rungs
+    #: and is worth 5.7x at the top one.
+    gurobi_threads: Optional[int] = None
     #: Knitro algorithm; 1 is interior-direct.
     knitro_algorithm: int = 1
     knitro_threads: int = 40
@@ -89,6 +116,10 @@ class SolverConfig:
                 if self.gurobi_method else None
             if code is not None:
                 opts.append(f"method={code}")
+            if self.gurobi_crossover is not None:
+                opts.append(f"crossover={self.gurobi_crossover}")
+            if self.gurobi_threads is not None:
+                opts.append(f"threads={self.gurobi_threads}")
             opts.append(f"timelim={self.time_limit_s:g}")
             opts.append(f"outlev={1 if self.verbose else 0}")
             ampl.setOption("gurobi_options", " ".join(opts))

@@ -90,6 +90,60 @@ Use `--dry-run` to see the effective configuration without solving.
 The AC stage of `a2` is one solve, and there is no knob that says otherwise:
 Section 3.4 is a transfer, not a re-separation.
 
+## The ladder study
+
+Section 5 runs the whole grid: six rungs x three functionals x three stages,
+and the Section 4 counterfactual campaign against every dispatch each of those
+produces.
+
+```bash
+ropf ladder configs/ladder.conf --dry-run   # what would run, and how big
+ropf ladder configs/ladder.conf             # claim one combo and run it
+ropf ladder configs/ladder.conf --all       # keep going until none left
+ropf ladder configs/ladder.conf --status    # the progress table
+```
+
+The unit of work is one **combo** -- one (rung, metric, stage) triple. One
+invocation claims one combo, runs its frontier and its campaign, writes
+`campaign.json`/`campaign.csv` beside the three frontier artifacts, and marks
+the directory `DONE`. Because the combos are independent, that gives both
+parallelism and resume for free: run the command in as many shells as you have
+cores, and run it again after a crash. A combo is claimed by creating
+`.claim/` inside its directory, which is atomic, so two processes racing for
+the same combo cannot both get it.
+
+Two things the campaign fixes once and never revisits, because varying them
+would make the dispatches incomparable:
+
+* **the top-K ranking**, taken from the nominal dispatch at lambda = 0.
+  Re-ranking per dispatch would flatter the de-risked ones, whose top-K carries
+  less power by construction;
+* **the disfigurement list**, built once per combo from a declared seed, so
+  every dispatch faces the same disturbances.
+
+### What the campaign needs that the cases do not carry
+
+The frequency screen of Section 4.2 needs each rung's PSS/E `.dyr` (and `.aux`
+for AGC participation). These ship with the ACTIVSg distributions and are
+**not** in `data/`, which holds the `.m` cases only -- point `dynamics_search`
+at wherever the distributions were unpacked.
+
+Its four constants -- `f0_hz`, `rocof_max_hz_s`, `f_under_hz` and the load
+damping -- are **not defaulted by the code**, and the config file inherits that
+refusal. They are grid-code quantities: supplying a plausible number would mean
+reporting it as if it were data. The damping must additionally name its base,
+because the textbook 1-2 %/% figure is on the *load* base and the swing
+equation needs the *system* base; the two differ by the load-to-baseMVA ratio
+(671 on ACTIVSg2000) and getting it wrong fails quietly, with the nadir simply
+coming out at the wrong depth.
+
+### Threads
+
+Set `threads` to the **physical** core count, not the logical one. On a
+2-socket box with 16 physical cores and 32 logical CPUs, letting Gurobi take
+its default cost 5.7x on a single model (D) evaluation at the 70k rung -- 64.7s
+against 11.4s -- for an answer agreeing to nine significant figures.
+
 ## Layout
 
 ```
@@ -102,7 +156,7 @@ src/ropf/
   results.py        the three artifacts
   log.py            the run transcript
   counterfactual/   Section 4: disfigurements, the frequency screen, (D)
-  study/            the ladder study driver
+  study/ladder.py   the ladder study driver: combos, claims, the campaign
   data/             fetching and verifying the ACTIVSg cases
 modfiles/           master.mod, master_ac.mod, postevent.mod
 ```
