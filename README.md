@@ -26,23 +26,25 @@ committed: the distributions run to about 875 MB. One small case,
 `case_ACTIVSg200.m`, is tracked under [tests/fixtures/](tests/fixtures/) so the
 test suite runs on a bare clone.
 
-There is no downloader. Texas A&M serves these from a landing page that
-requires accepting terms, so nothing can be retrieved unattended -- download the
-six distributions by hand, then install them:
+Texas A&M serves them from a landing page that requires accepting terms, so
+they have to be downloaded by hand. Unpack the six archives into `data/`:
 
 ```bash
-ropf data ~/ACTIVSg           # all six rungs
-ropf data ~/ACTIVSg texas2k   # one of them
+cd data
+for z in ~/ACTIVSg/ACTIVSg*.zip; do
+    unzip -j -o "$z" 'case_ACTIVSg*.m' '*.dyr' '*.aux'
+done
 ```
 
-That copies three files per rung into `data/`: the MATPOWER case, the `.dyr`
-machine records the Section 4.2 frequency screen reads, and the `.aux`
-participation factors. All three live in the *same* distribution, which is why
-this is a command and not a line of documentation saying `unzip` -- taking only
-the case leaves the frequency screen with nothing to read. It also absorbs the
-two ways the distributions are not uniform: ACTIVSg70k ships unpacked rather
-than as a zip, and ACTIVSg25k names its `.dyr` without the `_dynamics` the
-other five carry, which is rewritten so nothing downstream has to know.
+ACTIVSg70k ships as a directory rather than a zip; copy the same three files
+out of it. Nothing renames anything: the reader already knows that ACTIVSg25k
+calls its dynamics file `ACTIVSg25k.dyr` where the other five use
+`ACTIVSg<n>_dynamics.dyr`, and will read either.
+
+Point `dynamics_search` at `data` and the study is self-contained. It can also
+be pointed straight at the directory holding the archives -- the `.dyr` and
+`.aux` are read out of a zip without unpacking it -- in which case only the
+`.m` cases need to be extracted.
 
 Which case a result came from is recorded per run, not asserted up front:
 `solution_summary.json` carries the SHA-256 of the case that run actually read.
@@ -133,8 +135,9 @@ would make the dispatches incomparable:
 ### What the campaign needs that the cases do not carry
 
 The frequency screen of Section 4.2 needs each rung's PSS/E `.dyr` (and `.aux`
-for AGC participation). `ropf data` puts both in `data/` beside the cases, so
-`dynamics_search = data` is correct and needs no path outside the repository.
+for AGC participation). These ship inside the same archives as the cases, so
+unpacking as above puts them beside the cases and `dynamics_search = data` is
+correct.
 
 Its four constants -- `f0_hz`, `rocof_max_hz_s`, `f_under_hz` and the load
 damping -- are **not defaulted by the code**, and the config file inherits that
@@ -165,7 +168,6 @@ src/ropf/
   log.py            the run transcript
   counterfactual/   Section 4: disfigurements, the frequency screen, (D)
   study/ladder.py   the ladder study driver: combos, claims, the campaign
-  data/cases.py     the six rungs, and installing them from the distributions
 modfiles/           master.mod, master_ac.mod, postevent.mod
 ```
 

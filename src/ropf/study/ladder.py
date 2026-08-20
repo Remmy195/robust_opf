@@ -48,14 +48,37 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .. import algorithm, results as results_module
 from ..algorithm import STAGES, WEIGHT_GRID
-from ..config import ConfigError, RunConfig, _build, parse_keyfile
+from ..config import DATA_DIR, ConfigError, RunConfig, _build, parse_keyfile
 from ..counterfactual import disfigure, dynamics, frequency, postevent
 from ..counterfactual.postevent import Disfigurement, PostEventParams
-from ..data.cases import DATA_DIR, LADDER, RUNGS
 from ..log import Log
 from ..model import SolverConfig
 from ..network import Network, read_matpower
 from ..risk import METRICS
+
+#: The six rungs: the TAMU distribution each one is, and the MATPOWER file it
+#: reads.  Ordered smallest first, which is the order a partial run follows.
+#:
+#: The distribution name is not the rung name and both are needed: `texas2k`
+#: is what a config says, `ACTIVSg2000` is what the .dyr and .aux are called.
+#:
+#: Getting the files into data/ is a one-off documented in the README, not a
+#: command in this package.  It was a copy out of the TAMU archives, and the
+#: awkward parts of that copy are handled where they are actually needed --
+#: `ropf.counterfactual.dynamics.locate` already knows that ACTIVSg25k drops the
+#: `_dynamics` from its .dyr name and that ACTIVSg70k ships unpacked, and reads
+#: either shape straight out of the archive.
+RUNGS: Dict[str, Tuple[str, str]] = {
+    "activs200": ("ACTIVSg200", "case_ACTIVSg200.m"),
+    "activs500": ("ACTIVSg500", "case_ACTIVSg500.m"),
+    "texas2k": ("ACTIVSg2000", "case_ACTIVSg2000.m"),
+    "activs10k": ("ACTIVSg10k", "case_ACTIVSg10k.m"),
+    "activs25k": ("ACTIVSg25k", "case_ACTIVSg25k.m"),
+    "activs70k": ("ACTIVSg70k", "case_ACTIVSg70k.m"),
+}
+
+#: The ladder, smallest first.
+LADDER: Tuple[str, ...] = tuple(RUNGS)
 
 #: Written last, after every artifact.  Its presence is the only thing that
 #: means a combo is finished.
@@ -283,10 +306,10 @@ class Combo:
     @property
     def distribution(self) -> str:
         """The TAMU distribution name, e.g. ACTIVSg2000.  Not the rung name."""
-        return RUNGS[self.rung].dist
+        return RUNGS[self.rung][0]
 
     def case_path(self, data_dir: str = DATA_DIR) -> str:
-        return os.path.join(data_dir, RUNGS[self.rung].case)
+        return os.path.join(data_dir, RUNGS[self.rung][1])
 
 
 def combos(config: LadderConfig) -> List[Combo]:
@@ -578,9 +601,8 @@ def run_combo(config: LadderConfig, combo: Combo,
     case = combo.case_path()
     if not os.path.isfile(case):
         raise FileNotFoundError(
-            f"{combo.rung}: {case} is not there. Install it with "
-            f"`ropf data DIR {combo.rung}`, where DIR holds the TAMU "
-            f"distributions.")
+            f"{combo.rung}: {case} is not there. Unpack it from "
+            f"the ACTIVSg distributions; see the README.")
 
     started = time.time()
     network = read_matpower(case, log)

@@ -4,7 +4,6 @@
                           and write the three artifacts
     ropf ladder CONFIG    run the ladder study, one combo per invocation
     ropf keys             print the configuration key table
-    ropf data DIR         install the ACTIVSg cases and dynamics from DIR
 
 THE CONFIG FILE IS THE ONLY PLACE A STUDY PARAMETER IS SET.  No command-line
 flag overrides a value in it.  The flags that exist change what is printed
@@ -102,17 +101,6 @@ def _parser() -> argparse.ArgumentParser:
     ladder.add_argument("--quiet", action="store_true",
                         help="write the transcript to the file only")
     ladder.set_defaults(handler=_ladder)
-
-    data = sub.add_parser(
-        "data", help="install the ACTIVSg cases and dynamics into data/",
-        description=("Copy each rung's case, .dyr and .aux out of the TAMU "
-                     "distributions in DIR. There is no downloader: Texas A&M "
-                     "gates them behind a terms page, so this is a copy."))
-    data.add_argument("source", metavar="DIR",
-                      help="directory holding ACTIVSg200.zip and the rest")
-    data.add_argument("rungs", metavar="RUNG", nargs="*",
-                      help="rung names, e.g. texas2k; default is all six")
-    data.set_defaults(handler=_data)
 
     return parser
 
@@ -300,16 +288,6 @@ def _typename(declared) -> str:
         return "list of numbers"
     return {int: "integer", float: "number", bool: "true/false",
             str: "text"}.get(declared, getattr(declared, "__name__", "text"))
-
-
-###############################################################################
-# ropf data
-###############################################################################
-
-
-def _data(args: argparse.Namespace) -> int:
-    from .data import cases
-    return cases.install(args.source, args.rungs or None, log=sys.stdout.write)
 
 
 if __name__ == "__main__":
