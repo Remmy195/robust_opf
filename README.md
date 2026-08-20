@@ -1,0 +1,141 @@
+# ropf — risk-aware optimal power flow by cutting planes
+
+Companion code for the manuscript *Risk-aware optimal power flow*. It implements
+Algorithm 1 of Section 3, the three risk functionals of Section 2.3, the AC
+stage of Section 3.4, and the counterfactual campaign of Section 4, and it runs
+them over the six-rung ACTIVSg ladder of Section 5.
+
+Every optimization model in this repository is an AMPL `.mod` file under
+[modfiles/](modfiles/). There is no model built in Python.
+
+## Install
+
+```bash
+python -m venv .venv && . .venv/bin/activate
+pip install -e ".[dev,study]"
+```
+
+Requires Python 3.10+, an AMPL installation with a valid licence, and a solver.
+The study uses Gurobi for the linear models — (M) and (D) — and Knitro for the
+nonlinear AC master (M^ac); Ipopt works in place of Knitro at the smaller rungs.
+
+## The test systems
+
+The six rungs are the Texas A&M ACTIVSg synthetic grids. They are **not**
+committed: the distributions run to about 875 MB. One small case,
+`case_ACTIVSg200.m`, is tracked under [tests/fixtures/](tests/fixtures/) so the
+test suite runs on a bare clone.
+
+```bash
+ropf fetch --list      # the six rungs
+ropf fetch             # verify what is present, report what is missing
+ropf fetch activs200
+```
+
+Texas A&M serves the cases from a landing page that requires accepting terms, so
+no rung carries a download URL and `ropf fetch` cannot retrieve them unattended.
+What it does instead is **verify**: each rung declares the SHA-256 of the
+MATPOWER file it must produce, and a mismatch is an error. The ACTIVSg
+distributions are not versioned, so without the digest a study could be
+reproduced against a different case and report it as the same one. Run
+`ropf fetch` over an existing `data/` to check it.
+
+## Running a solve
+
+```bash
+ropf solve configs/activs200_flow_baseline.conf
+```
+
+This sweeps the weight grid for one (case, metric, stage) and writes three
+artifacts into `results/<tag>/`:
+
+| file | what it holds |
+| --- | --- |
+| `solution_summary.json` | every run in full: dispatch, per-iteration trace, provenance |
+| `efficient_frontier.csv` | one row per weight — cost, risk, the Gamma gap |
+| `efficient_frontier.json` | the same rows, with the dominated ones marked |
+
+A fourth file, `run.log`, is the transcript. Nothing reads it back.
+
+### The configuration file
+
+A run is described by a text file of `key = value` lines. `ropf keys` prints
+every key with its type and default.
+
+**The config file is the only place a study parameter is set.** No command-line
+flag overrides a value in it — the two flags that exist, `--quiet` and
+`--dry-run`, change what is printed and whether anything is solved, and neither
+can change a number. An override would mean the same file producing two
+different studies depending on how it was invoked, and the output directory
+could no longer be read as a record of what was run.
+
+Two kinds of mistake are errors rather than warnings:
+
+* an **unknown key**, because a config that ignores what it does not recognise
+  turns a typo into a study that measured the wrong thing, and leaves no trace
+  of it in the output;
+* a **duplicate key**, because there is no defensible answer to which of the two
+  values was meant. Last-one-wins is the usual choice and the worst one.
+
+Use `--dry-run` to see the effective configuration without solving.
+
+### The three stages
+
+| stage | what runs |
+| --- | --- |
+| `baseline` | Algorithm 1 on (M); the reported dispatch is the DC one |
+| `a2` | Algorithm 1 on (M), then (M^ac) solved **once** with the pool the DC loop accumulated (Section 3.4) |
+| `a3` | Algorithm 1 on (M^ac) throughout, separating on the AC dispatch |
+
+The AC stage of `a2` is one solve, and there is no knob that says otherwise:
+Section 3.4 is a transfer, not a re-separation.
+
+## Layout
+
+```
+src/ropf/
+  network.py        MATPOWER case files to the network model
+  risk.py           the functionals of Section 2.3 and their separation
+  model.py          the AMPL boundary: (M), (M^ac), (D)
+  algorithm.py      Algorithm 1 and the Section 3.4 AC stage
+  config.py         the configuration file and its key table
+  results.py        the three artifacts
+  log.py            the run transcript
+  counterfactual/   Section 4: disfigurements, the frequency screen, (D)
+  study/            the ladder study driver
+  data/             fetching and verifying the ACTIVSg cases
+modfiles/           master.mod, master_ac.mod, postevent.mod
+```
+
+`model.py` is the only module that touches AMPL, and it owns the entity
+lifecycle rule. Every line of Algorithm 1 is tagged `ALG1-Ln` in
+`algorithm.py` at the code implementing it, so a line of the pseudocode with no
+code under it — or code under no line — is visible in one screenful.
+
+## Tests
+
+```bash
+pytest
+```
+
+The suite anchors the reader against MATPOWER itself.
+[tests/fixtures/dump_matpower.m](tests/fixtures/dump_matpower.m) reads
+MATPOWER 8.1's own assembled `makeYbus` and `makeBdc` matrices and imports
+nothing from `ropf`, so the parity test is non-circular. Regenerate the fixture
+with Octave:
+
+```bash
+cd tests/fixtures
+OCTAVE_HOME=$HOME/miniconda3 $OCTAVE_HOME/bin/octave-cli --no-gui \
+    dump_matpower.m case_ACTIVSg200.m matpower_ACTIVSg200.csv
+```
+
+It takes the case and the output file as arguments. Octave here is the
+miniconda build and needs `OCTAVE_HOME` set, or every core function is
+undefined — which looks like a MATPOWER problem and is not one.
+
+Tests that need AMPL skip cleanly when it is absent.
+
+## Licence
+
+See [LICENSE](LICENSE).
