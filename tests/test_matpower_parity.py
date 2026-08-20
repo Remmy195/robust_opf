@@ -76,7 +76,7 @@ def _case_path(basename):
     """Prefer the committed fixture case, then the fetched data tree.
 
     No absolute path to any particular machine appears here.  A larger case is
-    found only if ``data/fetch.py`` has put it in ``data/``, or if the caller
+    found only if the distribution has been unpacked into ``data/``, or if the caller
     points ``ROPF_DATA_DIR`` at a tree that has it.
     """
     roots = [FIXTURES,
@@ -108,7 +108,7 @@ def parity_case(request):
     if case_path is None:
         if committed:
             pytest.fail(f"{case_basename} should ship with the repo")
-        pytest.skip(f"{case_basename} not available; run `ropf fetch`")
+        pytest.skip(f"{case_basename} not available; unpack it into data/")
     meta, sections = _load_fixture(fixture_name)
     return meta, sections, read_matpower(case_path)
 
