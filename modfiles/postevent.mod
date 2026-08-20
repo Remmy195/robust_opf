@@ -50,11 +50,15 @@ param alive_br  {e in branches} binary default 1;
 param alive_gen {g in gens} binary default 1;
 
 # --- declared study parameters -----------------------------------------------
-# beta, eq (6e): the emergency rating factor.  Defaults to 1, the NORMAL rating.
-# No case in this study carries a usable emergency rating -- rateB and rateC are
-# zero across every ACTIVSg case in .m, .aux and .RAW, and the ACTIVSg2000
-# LimitSet monitors contingencies against rating "A" -- so a value above 1
-# requires an external, cited source.
+# beta, eq (6e): the emergency rating factor.  1 is the NORMAL rating; the
+# study sets 1.2, a 20% short-term overload.  See PostEventParams: that value
+# is an assumption, because rateB and rateC are zero across the ACTIVSg cases.
+# rateB and rateC are zero across every ACTIVSg case in .m, .aux and .RAW, and
+# the ACTIVSg2000 LimitSet monitors contingencies against rating "A", so the
+# factor cannot be read off the data and has to be declared by the caller.
+# The default below stays at 1: a model file that silently applied a 20%
+# overload would make every unset caller report less lost load than the case
+# it was given supports.  The study's 1.2 is set explicitly, from the config.
 param beta >= 1 default 1;
 
 # Phase switch, eq (6f).  0 holds L at zero for the cost phase; 1 frees it for

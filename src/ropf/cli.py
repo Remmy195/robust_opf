@@ -110,6 +110,9 @@ def _parser() -> argparse.ArgumentParser:
                        help="rung names, e.g. activs200; default is all of them")
     fetch.add_argument("--list", action="store_true",
                        help="list the known cases and stop")
+    fetch.add_argument("--from", dest="source_dir", metavar="DIR",
+                       help="take the cases AND their dynamics from local "
+                            "ACTIVSg distributions already downloaded into DIR")
     fetch.set_defaults(handler=_fetch)
 
     return parser
@@ -312,6 +315,9 @@ def _fetch(args: argparse.Namespace) -> int:
         for name, source in sorted(fetch.SOURCES.items()):
             print(f"  {name:<12}  {source.description}")
         return 0
+    if args.source_dir:
+        return fetch.adopt(args.source_dir, args.cases or None,
+                           log=sys.stdout.write)
     return fetch.fetch(args.cases or None, log=sys.stdout.write)
 
 

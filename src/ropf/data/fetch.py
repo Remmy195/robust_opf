@@ -227,6 +227,163 @@ def fetch(names: Optional[Sequence[str]] = None,
     return 0
 
 
+###############################################################################
+# Adopting a local distribution
+###############################################################################
+
+
+def _members(source_dir: str, dist: str):
+    """``(read, {basename: member})`` for a distribution, zip or unpacked.
+
+    The two shapes are flattened here so that `adopt` never branches on which
+    one it got.  `read` takes a member name and returns bytes.
+    """
+    archive = os.path.join(source_dir, f"{dist}.zip")
+    if os.path.isfile(archive):
+        with zipfile.ZipFile(archive) as handle:
+            names = handle.namelist()
+        index = {os.path.basename(n): n for n in names if not n.endswith("/")}
+
+        def read(member: str) -> bytes:
+            with zipfile.ZipFile(archive) as handle:
+                return handle.read(member)
+        return read, index, archive
+
+    directory = os.path.join(source_dir, dist)
+    if os.path.isdir(directory):
+        index = {name: os.path.join(directory, name)
+                 for name in os.listdir(directory)
+                 if os.path.isfile(os.path.join(directory, name))}
+
+        def read(member: str) -> bytes:
+            with open(member, "rb") as handle:
+                return handle.read()
+        return read, index, directory
+
+    return None, {}, ""
+
+
+def _pick(index: Dict[str, str], *candidates: str) -> Optional[str]:
+    """The first candidate present, matched case-insensitively.
+
+    ACTIVSg2000 ships its dynamics aux as ``.AUX`` where every other rung uses
+    ``.aux``, and a case-sensitive lookup silently returns nothing.
+    """
+    lowered = {name.lower(): member for name, member in index.items()}
+    for candidate in candidates:
+        member = lowered.get(candidate.lower())
+        if member is not None:
+            return member
+    return None
+
+
+def adopt(source_dir: str,
+          names: Optional[Sequence[str]] = None,
+          log: Optional[Callable[[str], None]] = None,
+          data_dir: str = DATA_DIR) -> int:
+    """Take the cases AND the dynamics from local ACTIVSg distributions.
+
+    `source_dir` holds the distributions as TAMU ships them -- ``ACTIVSg200.zip``
+    and the like, or an unpacked directory of the same name.  For each rung this
+    writes three files into `data_dir`:
+
+        case_ACTIVSg<n>.m          the MATPOWER case, verified against its digest
+        ACTIVSg<n>_dynamics.dyr    the machine records the frequency screen needs
+        ACTIVSg<n>.aux             the GenParFac participation factors
+
+    THIS IS THE PATH THAT ACTUALLY WORKS, and `fetch` is not.  Texas A&M serves
+    the distributions from a terms-gated landing page, so no rung carries a URL
+    and nothing can be retrieved unattended; whoever runs this study has already
+    downloaded the archives by hand.  Adopting them is then a copy, not a
+    download, and it is the only step that has ever been needed.
+
+    It also takes the dynamics, which `fetch` never did.  Those ship INSIDE the
+    same archives as the cases, so a tree built by downloading case files alone
+    leaves the Section 4.2 screen with nothing to read, and the study config has
+    to point at wherever the archives happened to be unpacked instead.  The
+    names are the ones `ropf.counterfactual.dynamics.locate` looks for, so after
+    this ``dynamics_search = data`` is correct and self-contained.
+    """
+    emit = log or _noop
+    os.makedirs(data_dir, exist_ok=True)
+    failed, missing = [], []
+
+    for name, source, _present in status(names, data_dir):
+        dist = source.rung
+        emit(f"\n {name}: {source.description}\n")
+
+        read, index, where = _members(source_dir, dist)
+        if read is None:
+            emit(f"   no {dist}.zip and no {dist}/ under {source_dir}\n")
+            missing.append(name)
+            continue
+        emit(f"   from {where}\n")
+
+        case_member = _pick(index, os.path.basename(source.member),
+                            os.path.basename(source.case))
+        if case_member is None:
+            emit(f"   {source.case} is not in the distribution\n")
+            failed.append(name)
+            continue
+
+        # VERIFIED BEFORE IT REPLACES ANYTHING.  The archives are not the only
+        # place these cases come from, and they are not versioned: an archive
+        # can hold a different vintage of case_ACTIVSg<n>.m under the same name
+        # as the tree already has.  Writing first and checking after would let
+        # one command silently swap the case a study was run against for a
+        # different one, and the digest would only tell you afterwards.
+        target = os.path.join(data_dir, source.case)
+        payload = read(case_member)
+        found = hashlib.sha256(payload).hexdigest()
+
+        if source.sha256 and found != source.sha256:
+            emit(f"   {source.case}: SHA-256 MISMATCH, NOT WRITTEN\n"
+                 f"     expected {source.sha256}\n"
+                 f"     found    {found}\n"
+                 f"   The copy in this distribution is a different vintage of "
+                 f"the case than the one this study is pinned to. The existing "
+                 f"file was left alone.\n")
+            failed.append(name)
+        else:
+            with open(target, "wb") as handle:
+                handle.write(payload)
+            emit(f"   wrote {source.case}"
+                 f"{'' if source.sha256 else ' (unpinned, NOT verified)'}\n")
+
+        # The dynamics.  Absent is reported, not fatal: the frontier runs
+        # without them and only the Section 4.2 screen needs them.
+        dyr = _pick(index, f"{dist}_dynamics.dyr", f"{dist}.dyr")
+        if dyr is None:
+            emit(f"   no .dyr in the distribution; the frequency screen will "
+                 f"have no machine records for this rung\n")
+        else:
+            # Written under the name `locate` looks for first, so the ACTIVSg25k
+            # irregularity stops being visible downstream.
+            out = os.path.join(data_dir, f"{dist}_dynamics.dyr")
+            with open(out, "wb") as handle:
+                handle.write(read(dyr))
+            emit(f"   wrote {os.path.basename(out)}\n")
+
+        aux = _pick(index, f"{dist}.aux", f"{dist}_dynamics.aux")
+        if aux is None:
+            emit(f"   no .aux; participation falls back to the capacity "
+                 f"surrogate for this rung\n")
+        else:
+            out = os.path.join(data_dir, f"{dist}.aux")
+            with open(out, "wb") as handle:
+                handle.write(read(aux))
+            emit(f"   wrote {os.path.basename(out)}\n")
+
+    if missing:
+        emit(f"\n {len(missing)} distribution(s) were not found under "
+             f"{source_dir}: {', '.join(missing)}\n")
+    if failed:
+        emit(f"\n {len(failed)} rung(s) could not be verified: "
+             f"{', '.join(failed)}\n")
+        return 1
+    return 0
+
+
 def _download_and_unpack(source: Source, target: str,
                          emit: Callable[[str], None]) -> None:
     emit(f"   downloading {source.url}\n")

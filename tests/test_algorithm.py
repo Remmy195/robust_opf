@@ -223,7 +223,7 @@ def test_the_reported_dispatch_is_the_ac_one(hybrid_run):
 def test_the_ac_dispatch_is_scored_on_the_same_functional(hybrid_run, net):
     """rho at the AC iterate is phi evaluated on the AC dispatch, not inherited."""
     recomputed = risk.evaluate(hybrid_run.metric, net,
-                               hybrid_run.dispatch.Pf, hybrid_run.dispatch.Pg)
+                               hybrid_run.dispatch.Pf)
     assert hybrid_run.ac.rho == pytest.approx(recomputed.value, rel=1e-12)
 
 

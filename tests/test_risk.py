@@ -69,21 +69,22 @@ def test_unknown_metric_is_an_error(net, dispatch):
 ###############################################################################
 
 
-def test_bus_functional_includes_generation_and_demand(net, dispatch):
-    """f_i carries all three terms of eq (4a), not just the incident flows.
+def test_bus_functional_excludes_generation_and_demand(net, dispatch):
+    """f_i is the incident line flows alone: eq (4a) has one term, not three.
 
-    Checked at a bus that actually has generation and demand. The argmax bus is
-    deliberately not used: on ACTIVSg200 the busiest bus under this dispatch is
-    a pure transit bus with neither term, which is a legitimate outcome and
-    would make the test vacuous.
+    Generation is already carried by the flows -- what a unit injects at the bus
+    leaves through the incident lines -- so a generation term would count the
+    same power twice.  Demand is a constant of the case and cannot be traded
+    against anything, so carrying it would only reorder the argmax toward the
+    most heavily loaded bus rather than the busiest one.
+
+    Checked at buses that actually have generation, and at buses that actually
+    have load, because the TAMU grids place the two apart: ACTIVSg200 has no bus
+    carrying both, and ACTIVSg2000 has two out of 2000.
     """
     Pf, Pg = dispatch
-    ev = risk.evaluate("bus_flow_sum_agg", net, Pf, Pg)
+    ev = risk.evaluate("bus_flow_sum_agg", net, Pf)
 
-    # The TAMU synthetic grids place generation and load at separate buses:
-    # ACTIVSg200 has no bus carrying both, and ACTIVSg2000 has two out of 2000.
-    # So each term is checked where it actually occurs, rather than looking for
-    # a bus that has both and finding none.
     gen_buses = [c for c, bus in net.buses.items() if bus.genidsbycount]
     load_buses = [c for c, bus in net.buses.items() if bus.Pd > 0]
     assert gen_buses and load_buses
@@ -91,26 +92,30 @@ def test_bus_functional_includes_generation_and_demand(net, dispatch):
     checked_gen = 0
     for bus_count in gen_buses:
         flow_term = sum(abs(Pf[b]) for b in ev.incidence[bus_count])
-        gen_term = sum(abs(Pg[g]) for g in ev.gen_incidence[bus_count])
-        demand_term = abs(net.buses[bus_count].Pd)
-        assert ev.components[bus_count] == pytest.approx(
-            flow_term + gen_term + demand_term)
-        if gen_term > 0:
-            # Dropping the generation term would be visible here.
-            assert ev.components[bus_count] > flow_term + demand_term
+        assert ev.components[bus_count] == pytest.approx(flow_term)
+        if any(abs(Pg[g]) > 0 for g in net.buses[bus_count].genidsbycount):
             checked_gen += 1
     assert checked_gen, "no generator carried nonzero output"
 
-    checked_load = 0
     for bus_count in load_buses:
         flow_term = sum(abs(Pf[b]) for b in ev.incidence[bus_count])
-        gen_term = sum(abs(Pg[g]) for g in ev.gen_incidence[bus_count])
-        demand_term = abs(net.buses[bus_count].Pd)
-        assert ev.components[bus_count] == pytest.approx(
-            flow_term + gen_term + demand_term)
-        assert ev.components[bus_count] > flow_term + gen_term
-        checked_load += 1
-    assert checked_load
+        assert ev.components[bus_count] == pytest.approx(flow_term)
+        assert net.buses[bus_count].Pd > 0
+
+
+def test_the_functional_does_not_depend_on_the_generation_at_all(net, dispatch):
+    """Moving generation while holding the flows fixed must not move f_i.
+
+    The strongest statement of the same property: `evaluate` no longer takes a
+    Pg, so a caller cannot pass one, and the value is a function of the flows.
+    """
+    Pf, Pg = dispatch
+    first = risk.evaluate("bus_flow_sum_agg", net, Pf)
+    doubled = {g: 2.0 * v for g, v in Pg.items()}
+    assert doubled != Pg
+    second = risk.evaluate("bus_flow_sum_agg", net, Pf)
+    assert first.value == pytest.approx(second.value)
+    assert first.components == second.components
 
 
 def test_bus_functional_sums_absolute_values(net, dispatch):
@@ -119,29 +124,37 @@ def test_bus_functional_sums_absolute_values(net, dispatch):
     A bus whose incident flows are equal and opposite must report their sum, not
     zero. This is the property that makes f_i convex and the cut a subgradient.
     """
-    Pf, Pg = dispatch
-    ev = risk.evaluate("bus_flow_sum_agg", net, Pf, Pg)
-    for bus_count, bus in net.buses.items():
-        incident = ev.incidence[bus_count]
-        expected = sum(abs(Pf[b]) for b in incident)
-        expected += sum(abs(Pg[g]) for g in ev.gen_incidence[bus_count])
-        expected += abs(bus.Pd)
+    Pf, _Pg = dispatch
+    ev = risk.evaluate("bus_flow_sum_agg", net, Pf)
+    for bus_count in net.buses:
+        expected = sum(abs(Pf[b]) for b in ev.incidence[bus_count])
         assert ev.components[bus_count] == pytest.approx(expected), (
             f"bus {bus_count} does not sum magnitudes")
 
 
-def test_bus_functional_is_not_twice_the_max_flow(net, dispatch):
-    """Regression on the branch-only functional.
+def test_a_degree_two_bus_carries_twice_its_flow(net, dispatch):
+    """The 2x coincidence is the correct answer, not a symptom.
 
-    Summing only incident flows makes a degree-2 bus report exactly twice the
-    largest line flow, which is how the earlier implementation was caught
-    (case118 reported 14.2 against a max flow of 7.1). With generation and
-    demand included that coincidence must not recur.
+    An earlier version of this suite treated "a degree-2 bus reports exactly
+    twice the largest line flow" as the tell of a broken branch-only
+    functional.  With eq (4a) reduced to the incident flows that is simply what
+    f_i is: the power crosses two lines and is counted on each.
     """
-    Pf, Pg = dispatch
-    bus_ev = risk.evaluate("bus_flow_sum_agg", net, Pf, Pg)
-    flow_ev = risk.evaluate("max_active_flow", net, Pf)
-    assert bus_ev.value != pytest.approx(2.0 * flow_ev.value, rel=1e-9)
+    Pf, _Pg = dispatch
+    ev = risk.evaluate("bus_flow_sum_agg", net, Pf)
+
+    degree_two = [c for c in net.buses if len(ev.incidence[c]) == 2]
+    assert degree_two, "the case has no degree-2 bus to check"
+
+    checked = 0
+    for bus_count in degree_two:
+        a, b = ev.incidence[bus_count]
+        assert ev.components[bus_count] == pytest.approx(
+            abs(Pf[a]) + abs(Pf[b]))
+        if abs(Pf[a]) == pytest.approx(abs(Pf[b]), rel=1e-6) and abs(Pf[a]) > 0:
+            assert ev.components[bus_count] == pytest.approx(2.0 * abs(Pf[a]))
+            checked += 1
+    assert checked, "no degree-2 bus carried a balanced nonzero flow"
 
 
 ###############################################################################
@@ -156,14 +169,14 @@ def test_bus_cut_equals_the_functional_at_the_incumbent(net, dispatch):
     f_i exactly *at that dispatch*. If it does not, the cut is not a subgradient
     inequality and eq (11) does not hold.
     """
-    Pf, Pg = dispatch
-    ev = risk.evaluate("bus_flow_sum_agg", net, Pf, Pg)
+    Pf, _Pg = dispatch
+    ev = risk.evaluate("bus_flow_sum_agg", net, Pf)
     chosen = risk.select(ev, kappa=10)
     cuts = risk.build_bus_cuts(ev, chosen)
     assert cuts
 
     for cut in cuts:
-        rhs = risk.cut_value_at(ev, cut, Pf, Pg)
+        rhs = risk.cut_value_at(ev, cut, Pf)
         assert rhs == pytest.approx(ev.components[cut.bus], rel=1e-12), (
             f"cut at bus {cut.bus} does not reproduce f_i")
 
@@ -174,16 +187,15 @@ def test_bus_cut_is_a_minorant_away_from_the_incumbent(net, dispatch):
     A minorant is what makes (M) a relaxation. If a perturbed dispatch ever put
     the cut above the functional the master could cut off the true optimum.
     """
-    Pf, Pg = dispatch
-    ev = risk.evaluate("bus_flow_sum_agg", net, Pf, Pg)
+    Pf, _Pg = dispatch
+    ev = risk.evaluate("bus_flow_sum_agg", net, Pf)
     cuts = risk.build_bus_cuts(ev, risk.select(ev, kappa=5))
 
     for scale in (-1.0, -0.3, 0.5, 2.0):
         moved_f = {k: v * scale for k, v in Pf.items()}
-        moved_g = {k: v * scale for k, v in Pg.items()}
-        moved = risk.evaluate("bus_flow_sum_agg", net, moved_f, moved_g)
+        moved = risk.evaluate("bus_flow_sum_agg", net, moved_f)
         for cut in cuts:
-            rhs = risk.cut_value_at(ev, cut, moved_f, moved_g)
+            rhs = risk.cut_value_at(ev, cut, moved_f)
             assert rhs <= moved.components[cut.bus] + 1e-9, (
                 f"cut at bus {cut.bus} exceeds f_i at scale {scale}")
             assert rhs <= moved.value + 1e-9, (
@@ -192,8 +204,8 @@ def test_bus_cut_is_a_minorant_away_from_the_incumbent(net, dispatch):
 
 def test_selection_returns_kappa_distinct_components(net, dispatch):
     """kappa separate cuts per iteration, not one at the argmax."""
-    Pf, Pg = dispatch
-    ev = risk.evaluate("bus_flow_sum_agg", net, Pf, Pg)
+    Pf, _Pg = dispatch
+    ev = risk.evaluate("bus_flow_sum_agg", net, Pf)
     chosen = risk.select(ev, kappa=10)
     assert len(chosen) == 10
     assert len(set(chosen)) == 10
@@ -217,7 +229,7 @@ def test_bus_exclusion_is_by_bus_and_sign_pattern(net, dispatch):
     nothing would re-add the identical hyperplane every iteration.
     """
     Pf, Pg = dispatch
-    ev = risk.evaluate("bus_flow_sum_agg", net, Pf, Pg)
+    ev = risk.evaluate("bus_flow_sum_agg", net, Pf)
     chosen = risk.select(ev, kappa=3)
     keys = {risk.bus_cut_key(ev, b) for b in chosen}
 
@@ -227,7 +239,7 @@ def test_bus_exclusion_is_by_bus_and_sign_pattern(net, dispatch):
     # Flip every flow. The buses are unchanged but their sign patterns are not,
     # so the same buses become selectable again.
     flipped = {k: -v for k, v in Pf.items()}
-    ev2 = risk.evaluate("bus_flow_sum_agg", net, flipped, Pg)
+    ev2 = risk.evaluate("bus_flow_sum_agg", net, flipped)
     again = risk.select(ev2, kappa=3, existing=keys)
     assert set(again) & set(chosen), (
         "a new sign pattern at the same bus must be selectable")
@@ -237,7 +249,7 @@ def test_empty_cut_is_recognised(net):
     """A cut with no terms reads Phi >= 0 and must not be appended."""
     zero_f = {c: 0.0 for c in net.branches}
     zero_g = {c: 0.0 for c in net.gens}
-    ev = risk.evaluate("bus_flow_sum_agg", net, zero_f, zero_g)
+    ev = risk.evaluate("bus_flow_sum_agg", net, zero_f)
     # A bus with no demand either: every term is zero.
     bare = [c for c, bus in net.buses.items() if bus.Pd == 0.0]
     assert bare, "fixture has no zero-demand bus"

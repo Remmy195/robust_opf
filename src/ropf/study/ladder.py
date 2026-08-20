@@ -119,9 +119,11 @@ class LadderConfig:
     #: study axis and not a measured quantity, so it is swept.  Every value
     #: multiplies the campaign, which `--dry-run` reports before anything runs.
     gamma: Tuple[float, ...] = (0.5,)
-    #: beta, the emergency rating factor of eq (6e).  Above 1 needs a cited
-    #: source: rateB and rateC are zero across the ACTIVSg distributions.
-    beta: float = 1.0
+    #: beta, the emergency rating factor of eq (6e).  1.2 is a 20% short-term
+    #: overload, an assumption rather than data: rateB and rateC are zero
+    #: across the ACTIVSg distributions, so no case states one.  It wants a
+    #: citation before publication and is swept like any other axis.
+    beta: float = 1.2
 
     # --- Section 4.2: the frequency screen -----------------------------------
     #: None of these four is defaulted.  `frequency.ScreenConfig` refuses to

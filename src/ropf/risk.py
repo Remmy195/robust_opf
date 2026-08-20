@@ -2,7 +2,7 @@
 
 Three functionals, and nothing else.  Equations (4a) to (4c):
 
-    phi^bus  = max_i  { sum_{(m,n) in E_i} |P_mn| + sum_{g in G_i} |P_g| + |P_di| }
+    phi^bus  = max_i  sum_{(m,n) in E_i} |P_mn|
     phi^flow = max_e  |P_e|
     phi^joule= max_e  r_e P_e^2
 
@@ -11,17 +11,30 @@ here touches AMPL, logs, or mutates state, which is what lets the same code
 evaluate the incumbent inside the loop, score a dispatch in the counterfactual,
 and be exercised in tests without a solver.
 
-TWO PROPERTIES OF phi^bus ARE EASY TO GET WRONG AND ARE LOAD-BEARING.
+``f_i`` IS THE INCIDENT LINE FLOWS AND NOTHING ELSE.  It carries no generation
+term and no demand term, and both omissions are deliberate.
 
-First, ``f_i`` sums *absolute values*, and it includes the generation and demand
-at the bus.  Dropping either term, or letting flows cancel, measures something
-else entirely: the tell is a degree-2 bus reporting exactly twice the largest
-line flow, which is what the branch-only version produced.
+GENERATION IS ALREADY IN THE FLOWS.  Kirchhoff at bus i says the injection
+there leaves through the incident lines: what a unit produces is precisely what
+shows up in ``sum |P_mn|``.  Adding ``sum_g |P_g|`` counts the same power a
+second time, and weights a generator bus against a transit bus by an accident
+of where the metering happens rather than by how much power moves.
 
-Second, the signs enter *only* in the cut, frozen at the incumbent.  That is
-what makes eq (6c) a subgradient inequality of ``f_i``, hence a minorant of
-phi^bus, hence eq (11).  A cut built from anything other than the incumbent's
-sign pattern is not valid.
+DEMAND IS FIXED DATA.  ``P_di`` is a constant of the case, identical at every
+dispatch and at every lambda, so it cannot be traded against anything.  Carried
+in ``f_i`` it does not change what any dispatch can do; it only adds a fixed
+per-bus offset that reorders the argmax, so the functional would report the
+most heavily *loaded* bus rather than the busiest one, and the cut at that bus
+would carry a constant the master can never move.
+
+``f_i`` sums *absolute values*, so the flows do not cancel.  A degree-2 bus
+carrying P through it scores 2|P|, and that is correct rather than a symptom:
+the power crosses two lines.
+
+THE SIGNS ENTER ONLY IN THE CUT, frozen at the incumbent.  That is what makes
+eq (6c) a subgradient inequality of ``f_i``, hence a minorant of phi^bus, hence
+eq (11).  A cut built from anything other than the incumbent's sign pattern is
+not valid.
 """
 
 from __future__ import annotations
@@ -66,12 +79,10 @@ class RiskEval:
     value: float
     components: Dict[int, float] = field(default_factory=dict)
 
-    # Populated for the bus functional only; all keyed by bus count.
+    # Populated for the bus functional only.  `incidence` is keyed by bus
+    # count, `branch_sign` by branch count.
     incidence: Dict[int, List[int]] = field(default_factory=dict)
     branch_sign: Dict[int, int] = field(default_factory=dict)
-    gen_incidence: Dict[int, List[int]] = field(default_factory=dict)
-    gen_sign: Dict[int, int] = field(default_factory=dict)
-    demand: Dict[int, float] = field(default_factory=dict)
 
     @property
     def is_bus_family(self) -> bool:
@@ -95,14 +106,16 @@ class RiskEval:
 
 def evaluate(metric: str,
              network: Network,
-             Pf: Dict[int, float],
-             Pg: Optional[Dict[int, float]] = None) -> RiskEval:
+             Pf: Dict[int, float]) -> RiskEval:
     """Evaluate the active functional at a dispatch.
 
     This is Algorithm 1 line 2 at k = 0 and line 8 thereafter.  `Pf` is keyed by
-    branch count and `Pg` by generator count, matching `ropf.network`.
+    branch count, matching `ropf.network`.
 
-    `Pg` is required by the bus functional and ignored by the other two.
+    All three functionals are functions of the FLOWS alone.  The bus functional
+    took a `Pg` as well while ``f_i`` carried a generation term; it no longer
+    does, and the argument is gone rather than ignored, so that a caller cannot
+    read the signature as saying the dispatch's generation still matters here.
     """
     if metric not in METRICS:
         raise ValueError(f"unknown risk functional {metric!r}; "
@@ -112,7 +125,7 @@ def evaluate(metric: str,
         return _evaluate_flow(network, Pf)
     if metric == "joule_loss_max":
         return _evaluate_joule(network, Pf)
-    return _evaluate_bus(network, Pf, Pg or {})
+    return _evaluate_bus(network, Pf)
 
 
 def _evaluate_flow(network: Network, Pf: Dict[int, float]) -> RiskEval:
@@ -141,20 +154,16 @@ def _evaluate_joule(network: Network, Pf: Dict[int, float]) -> RiskEval:
     return RiskEval("joule_loss_max", value, components)
 
 
-def _evaluate_bus(network: Network,
-                  Pf: Dict[int, float],
-                  Pg: Dict[int, float]) -> RiskEval:
-    """eq (4a): the power incident to the busiest bus.
+def _evaluate_bus(network: Network, Pf: Dict[int, float]) -> RiskEval:
+    """eq (4a): the power crossing the busiest bus.
 
     Every incident line contributes the flow at *its own from-end*, which is why
-    both endpoints of a branch accumulate ``|Pf|`` and neither uses ``Pt``.
+    both endpoints of a branch accumulate ``|Pf|`` and neither uses ``Pt``.  See
+    the module docstring for why generation and demand are not terms here.
     """
     f_bus: Dict[int, float] = {count: 0.0 for count in network.buses}
     incidence: Dict[int, List[int]] = {count: [] for count in network.buses}
     branch_sign: Dict[int, int] = {}
-    gen_incidence: Dict[int, List[int]] = {}
-    gen_sign: Dict[int, int] = {}
-    demand: Dict[int, float] = {}
 
     for count, branch in network.branches.items():
         flow = float(Pf.get(count, 0.0))
@@ -164,23 +173,9 @@ def _evaluate_bus(network: Network,
             f_bus[endpoint] += magnitude
             incidence[endpoint].append(count)
 
-    for count, bus in network.buses.items():
-        gen_ids = [int(g) for g in bus.genidsbycount]
-        gen_incidence[count] = gen_ids
-        total = 0.0
-        for gen_id in gen_ids:
-            output = float(Pg.get(gen_id, 0.0))
-            gen_sign[gen_id] = _sign(output)
-            total += abs(output)
-        pd = abs(float(bus.Pd))
-        demand[count] = pd
-        f_bus[count] += total + pd
-
     value = max(f_bus.values(), default=0.0)
     return RiskEval("bus_flow_sum_agg", value, f_bus,
-                    incidence=incidence, branch_sign=branch_sign,
-                    gen_incidence=gen_incidence, gen_sign=gen_sign,
-                    demand=demand)
+                    incidence=incidence, branch_sign=branch_sign)
 
 
 ###############################################################################
@@ -250,34 +245,20 @@ def build_bus_cuts(ev: RiskEval, buses: Sequence[int]) -> List[BusCut]:
             elif sign < 0:
                 branch_neg.append(int(branch))
 
-        gen_pos, gen_neg = [], []
-        for gen in ev.gen_incidence.get(bus, ()):
-            sign = ev.gen_sign.get(gen, 0)
-            if sign > 0:
-                gen_pos.append(int(gen))
-            elif sign < 0:
-                gen_neg.append(int(gen))
-
         cuts.append(BusCut(bus=bus,
                            branch_pos=tuple(branch_pos),
-                           branch_neg=tuple(branch_neg),
-                           gen_pos=tuple(gen_pos),
-                           gen_neg=tuple(gen_neg),
-                           demand=float(ev.demand.get(bus, 0.0))))
+                           branch_neg=tuple(branch_neg)))
     return cuts
 
 
 def cut_value_at(ev: RiskEval, cut: BusCut,
-                 Pf: Dict[int, float], Pg: Dict[int, float]) -> float:
+                 Pf: Dict[int, float]) -> float:
     """Evaluate a bus cut's right-hand side at a dispatch.
 
     At the dispatch the cut was built from this must equal ``f_i`` exactly.
     That identity is the whole justification for eq (6c), so it is checked in
     the tests rather than assumed.
     """
-    total = cut.demand
-    total += sum(float(Pf.get(b, 0.0)) for b in cut.branch_pos)
+    total = sum(float(Pf.get(b, 0.0)) for b in cut.branch_pos)
     total -= sum(float(Pf.get(b, 0.0)) for b in cut.branch_neg)
-    total += sum(float(Pg.get(g, 0.0)) for g in cut.gen_pos)
-    total -= sum(float(Pg.get(g, 0.0)) for g in cut.gen_neg)
     return total

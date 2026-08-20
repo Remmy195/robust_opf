@@ -176,18 +176,18 @@ class Solution:
 class BusCut:
     """One instance of eq (6c), the bus family cut at a single bus.
 
-    ``branch_pos``/``branch_neg`` and ``gen_pos``/``gen_neg`` carry the incident
-    components split by the sign they take at the incumbent; a component whose
-    value is zero there contributes nothing and appears in neither.  ``demand``
-    is the constant |P_di|.
+    ``branch_pos``/``branch_neg`` carry the incident lines split by the sign
+    they take at the incumbent; a line whose flow is zero there contributes
+    nothing and appears in neither.
+
+    There is no generation term and no demand term, because ``f_i`` has
+    neither: what a unit injects at the bus already leaves through these same
+    lines, and the demand is a constant of the case.  See `ropf.risk`.
     """
 
     bus: int
     branch_pos: Sequence[int]
     branch_neg: Sequence[int]
-    gen_pos: Sequence[int]
-    gen_neg: Sequence[int]
-    demand: float
 
     @property
     def key(self) -> tuple:
@@ -200,14 +200,12 @@ class BusCut:
         skip cannot drift apart -- there is one definition, and it is this one.
         """
         return (self.bus,
-                tuple(sorted(self.branch_pos)), tuple(sorted(self.branch_neg)),
-                tuple(sorted(self.gen_pos)), tuple(sorted(self.gen_neg)))
+                tuple(sorted(self.branch_pos)), tuple(sorted(self.branch_neg)))
 
     @property
     def is_empty(self) -> bool:
         """A cut with no terms reads ``Phi >= 0``, which the model already has."""
-        return not (self.branch_pos or self.branch_neg
-                    or self.gen_pos or self.gen_neg or self.demand)
+        return not (self.branch_pos or self.branch_neg)
 
 
 ###############################################################################
@@ -461,9 +459,6 @@ class Master:
         added = 0
         pos_br = self.ampl.getSet("bus_cut_br_pos")
         neg_br = self.ampl.getSet("bus_cut_br_neg")
-        pos_gen = self.ampl.getSet("bus_cut_gen_pos")
-        neg_gen = self.ampl.getSet("bus_cut_gen_neg")
-        demand = self.ampl.get_parameter("bus_cut_demand")
 
         wanted = sum(1 for cut in cuts if not cut.is_empty)
         if self._n_bus_cuts + wanted > self.bus_cut_capacity:
@@ -480,9 +475,6 @@ class Master:
             self._bus_cuts.append(cut)
             pos_br[k].setValues(list(cut.branch_pos))
             neg_br[k].setValues(list(cut.branch_neg))
-            pos_gen[k].setValues(list(cut.gen_pos))
-            neg_gen[k].setValues(list(cut.gen_neg))
-            demand[k] = float(cut.demand)
             added += 1
 
         if added:

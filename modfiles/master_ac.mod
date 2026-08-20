@@ -143,19 +143,14 @@ subject to JouleCut {k in 1..nCUT: risk_family = 1}:
 
 # eq (6c), the bus family.  Each incident line contributes the flow at its own
 # from-end, so this reads Pf at both endpoints and never Pt -- the same
-# convention as the functional in eq (4a).
+# convention as the functional in eq (4a).  No generation or demand term: see
+# modfiles/master.mod, where the reason is set out in full.
 param MAX_BUS_CUTS >= 0, integer, default card(buses);
 param nBUSCUT >= 0, <= MAX_BUS_CUTS, integer, default 0;
 
 set bus_cut_br_pos  {k in 1..MAX_BUS_CUTS} within branches default {};
 set bus_cut_br_neg  {k in 1..MAX_BUS_CUTS} within branches default {};
-set bus_cut_gen_pos {k in 1..MAX_BUS_CUTS} within gens     default {};
-set bus_cut_gen_neg {k in 1..MAX_BUS_CUTS} within gens     default {};
-param bus_cut_demand {k in 1..MAX_BUS_CUTS} >= 0 default 0;
 
 subject to BusCut {k in 1..nBUSCUT}:
     Phi >= (sum {e in bus_cut_br_pos[k]}  Pf[e])
-         - (sum {e in bus_cut_br_neg[k]}  Pf[e])
-         + (sum {g in bus_cut_gen_pos[k]} Pg[g])
-         - (sum {g in bus_cut_gen_neg[k]} Pg[g])
-         + bus_cut_demand[k];
+         - (sum {e in bus_cut_br_neg[k]}  Pf[e]);

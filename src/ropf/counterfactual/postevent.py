@@ -65,14 +65,23 @@ class PostEventParams:
         gamma is a declared study axis, not a measured quantity: it is swept,
         never assumed at one value and reported as if it were data.
     beta
-        The emergency rating factor of eq (6e).  1 is the NORMAL rating and is
-        the default.  No case here carries a usable emergency rating -- rateB
-        and rateC are zero across the ACTIVSg distributions -- so a value above
-        1 needs an external, cited source rather than a convention.
+        The emergency rating factor of eq (6e).  1 is the NORMAL rating; the
+        default here is 1.2, a 20% short-term overload.
+
+        This is an ASSUMPTION, not data.  No case in this study carries a
+        usable emergency rating -- rateB and rateC are zero across every
+        ACTIVSg distribution -- so the number cannot be read off the case the
+        way a normal rating can.  20% is the conventional order of magnitude
+        for a short-term line rating and is used here so that (D) is not
+        dispatching a post-event system against normal ratings, which would
+        overstate lost load by forbidding exactly the temporary overload an
+        emergency rating exists to allow.  It wants a citation before it is
+        reported, and it is a declared parameter rather than a constant so that
+        it can be swept.
     """
 
     gamma: float
-    beta: float = 1.0
+    beta: float = 1.2
 
     def __post_init__(self) -> None:
         if self.gamma < 0:

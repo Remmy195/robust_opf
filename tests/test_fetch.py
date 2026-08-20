@@ -195,3 +195,124 @@ def test_a_missing_member_names_what_was_looked_for(tmp_path):
     with zipfile.ZipFile(archive) as z:
         with pytest.raises(FileNotFoundError, match="case_ACTIVSg200.m"):
             fetch._find_member(z, SOURCES["activs200"])
+
+
+###############################################################################
+# Adopting a local distribution
+###############################################################################
+
+
+def make_zip(path, entries):
+    with zipfile.ZipFile(path, "w") as z:
+        for name, payload in entries.items():
+            z.writestr(name, payload)
+    return str(path)
+
+
+def test_adopt_takes_the_case_and_both_dynamics_files(tmp_path):
+    """The .dyr and .aux ship inside the same archive as the case.
+
+    Taking only the case is what left the frequency screen with nothing to read
+    and forced the study config to point outside the repository.
+    """
+    source = tmp_path / "src"
+    source.mkdir()
+    data = tmp_path / "data"
+    make_zip(source / "ACTIVSg200.zip", {
+        "case_ACTIVSg200.m": open(CASE, "rb").read(),
+        "ACTIVSg200_dynamics.dyr": "dyr payload",
+        "ACTIVSg200.aux": "aux payload",
+        "ACTIVSg200.RAW": "ignored",
+    })
+    lines, emit = log()
+    code = fetch.adopt(str(source), ["activs200"], log=emit,
+                       data_dir=str(data))
+    assert code == 0, "".join(lines)
+    assert (data / "case_ACTIVSg200.m").exists()
+    assert (data / "ACTIVSg200_dynamics.dyr").read_text() == "dyr payload"
+    assert (data / "ACTIVSg200.aux").read_text() == "aux payload"
+
+
+def test_a_mismatched_case_is_not_written(tmp_path):
+    """THE POINT OF CHECKING BEFORE WRITING.
+
+    The archives are not versioned, so one can hold a different vintage of the
+    case under the same name. Adopting it must not overwrite the case an
+    existing tree was built on -- the digest would then only report the swap
+    after it had happened.
+    """
+    source = tmp_path / "src"
+    source.mkdir()
+    data = tmp_path / "data"
+    data.mkdir()
+    good = (data / "case_ACTIVSg200.m")
+    good.write_bytes(open(CASE, "rb").read())
+
+    make_zip(source / "ACTIVSg200.zip",
+             {"case_ACTIVSg200.m": "a different vintage\n"})
+
+    lines, emit = log()
+    code = fetch.adopt(str(source), ["activs200"], log=emit,
+                       data_dir=str(data))
+    message = "".join(lines)
+    assert code == 1
+    assert "NOT WRITTEN" in message
+    assert fetch.digest(str(good)) == SOURCES["activs200"].sha256, \
+        "the existing verified case must be left exactly as it was"
+
+
+def test_adopt_normalizes_the_activs25k_dyr_name(tmp_path):
+    """ACTIVSg25k drops the `_dynamics` the other five carry.
+
+    It is written back under the name `locate` looks for first, so the
+    irregularity stops being visible to anything downstream.
+    """
+    source = tmp_path / "src"
+    source.mkdir()
+    data = tmp_path / "data"
+    make_zip(source / "ACTIVSg25k.zip", {
+        "case_ACTIVSg25k.m": "not the real case",
+        "ACTIVSg25k.dyr": "dyr payload",
+    })
+    lines, emit = log()
+    fetch.adopt(str(source), ["activs25k"], log=emit, data_dir=str(data))
+    assert (data / "ACTIVSg25k_dynamics.dyr").read_text() == "dyr payload"
+
+
+def test_adopt_reads_an_unpacked_distribution(tmp_path):
+    """ACTIVSg70k ships as a directory rather than a zip."""
+    source = tmp_path / "src"
+    unpacked = source / "ACTIVSg70k"
+    unpacked.mkdir(parents=True)
+    (unpacked / "case_ACTIVSg70k.m").write_text("not the real case")
+    (unpacked / "ACTIVSg70k_dynamics.dyr").write_text("dyr payload")
+    data = tmp_path / "data"
+
+    lines, emit = log()
+    fetch.adopt(str(source), ["activs70k"], log=emit, data_dir=str(data))
+    assert (data / "ACTIVSg70k_dynamics.dyr").read_text() == "dyr payload"
+
+
+def test_adopt_finds_a_case_insensitive_aux(tmp_path):
+    """ACTIVSg2000 ships its dynamics aux as .AUX where the others use .aux."""
+    source = tmp_path / "src"
+    source.mkdir()
+    data = tmp_path / "data"
+    make_zip(source / "ACTIVSg2000.zip", {
+        "case_ACTIVSg2000.m": "not the real case",
+        "ACTIVSg2000_dynamics.AUX": "aux payload",
+    })
+    lines, emit = log()
+    fetch.adopt(str(source), ["texas2k"], log=emit, data_dir=str(data))
+    assert (data / "ACTIVSg2000.aux").read_text() == "aux payload"
+
+
+def test_a_missing_distribution_is_reported_not_crashed(tmp_path):
+    source = tmp_path / "src"
+    source.mkdir()
+    lines, emit = log()
+    code = fetch.adopt(str(source), ["activs200"], log=emit,
+                       data_dir=str(tmp_path / "data"))
+    message = "".join(lines)
+    assert code == 0, "a distribution that is absent is not a failed digest"
+    assert "no ACTIVSg200.zip" in message

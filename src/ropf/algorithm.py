@@ -338,7 +338,7 @@ def run_loop(network: Network,
         return result
 
     # ---- ALG1-L2: rho0 <- phi(x0), k <- 0 ----------------------------------
-    ev = risk.evaluate(metric, network, nominal.Pf, nominal.Pg)
+    ev = risk.evaluate(metric, network, nominal.Pf)
     rho0 = ev.value
     result.rho0 = rho0
     result.iterations.append(_iterate(0, nominal, rho0, rho0, master, 0))
@@ -426,7 +426,7 @@ def run_loop(network: Network,
             break
 
         # ---- ALG1-L8: rho^k, Gamma^k ---------------------------------------
-        ev_k = risk.evaluate(metric, network, solution.Pf, solution.Pg)
+        ev_k = risk.evaluate(metric, network, solution.Pf)
         iterate = _iterate(k, solution, ev_k.value, rho0, master, added)
         result.iterations.append(iterate)
         result.dispatch = solution
@@ -489,7 +489,7 @@ def run_ac_stage(network: Network,
     ac.add_bus_cuts(dc_master.bus_cuts)
 
     solution = ac.solve()
-    ev = risk.evaluate(config.metric, network, solution.Pf, solution.Pg)
+    ev = risk.evaluate(config.metric, network, solution.Pf)
     iterate = _iterate(result.k_end, solution, ev.value, result.rho0, ac, 0)
     result.ac = iterate
 

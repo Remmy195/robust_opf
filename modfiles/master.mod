@@ -107,14 +107,20 @@ subject to JouleCut {k in 1..nCUT: risk_family = 1}:
 ###############################################################################
 #  eq (6c): the bus family.
 #
-#  Phi >= sum_{(m,n) in E_i} sigma_mn P_mn + sum_{g in G_i} sigma_g P_g + |P_di|
+#  Phi >= sum_{(m,n) in E_i} sigma_mn P_mn
 #
-#  The signs are frozen from the incumbent while the flows and unit outputs stay
-#  live, which is what makes the cut a subgradient inequality of f_i and hence a
-#  minorant of phi^bus.  Because sigma is exactly +1 or -1 (a term whose value
-#  is zero at the incumbent contributes nothing and is simply omitted), the
-#  cut is carried by four index sets rather than a dense coefficient matrix --
-#  which matters at 88,207 branches.
+#  f_i is the incident line flows and nothing else.  There is no generation
+#  term: what a unit injects at bus i already leaves through these same lines,
+#  so a sum_g sigma_g P_g would count the same power twice.  There is no demand
+#  term either: P_di is a constant of the case, so it cannot be traded against
+#  anything and would only add a fixed offset that reorders the argmax.
+#
+#  The signs are frozen from the incumbent while the flows stay live, which is
+#  what makes the cut a subgradient inequality of f_i and hence a minorant of
+#  phi^bus.  Because sigma is exactly +1 or -1 (a line whose flow is zero at
+#  the incumbent contributes nothing and is simply omitted), the cut is carried
+#  by two index sets rather than a dense coefficient matrix -- which matters at
+#  88,207 branches.
 #
 #  Declared here rather than built as constraint text from Python, so that the
 #  model a reader inspects is the model that is solved, and so the bus cuts are
@@ -126,13 +132,7 @@ param nBUSCUT >= 0, <= MAX_BUS_CUTS, integer, default 0;
 
 set bus_cut_br_pos  {k in 1..MAX_BUS_CUTS} within branches default {};
 set bus_cut_br_neg  {k in 1..MAX_BUS_CUTS} within branches default {};
-set bus_cut_gen_pos {k in 1..MAX_BUS_CUTS} within gens     default {};
-set bus_cut_gen_neg {k in 1..MAX_BUS_CUTS} within gens     default {};
-param bus_cut_demand {k in 1..MAX_BUS_CUTS} >= 0 default 0;   # |P_di|
 
 subject to BusCut {k in 1..nBUSCUT}:
     Phi >= (sum {e in bus_cut_br_pos[k]}  Pf[e])
-         - (sum {e in bus_cut_br_neg[k]}  Pf[e])
-         + (sum {g in bus_cut_gen_pos[k]} Pg[g])
-         - (sum {g in bus_cut_gen_neg[k]} Pg[g])
-         + bus_cut_demand[k];
+         - (sum {e in bus_cut_br_neg[k]}  Pf[e]);
