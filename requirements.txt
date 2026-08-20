@@ -1,0 +1,14 @@
+# Python dependencies.
+#
+# External prerequisites, not installable with pip:
+#   * AMPL with a valid licence, on PATH or at $AMPLPATH. Every optimization
+#     model in this study is an AMPL model file under modfiles/.
+#   * A solver AMPL can call. The study uses Gurobi for the DC master and (D),
+#     and Knitro or IPOPT for the AC master; all three are configured in
+#     ropf/model.py.
+#
+# Reproducing the figures additionally needs the `study` extra:
+#     pip install -e ".[study]"
+
+amplpy>=0.15
+numpy>=1.24

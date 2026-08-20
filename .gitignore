@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Case data is fetched, not committed: the six TAMU distributions are ~875 MB.
+# The one small case under tests/fixtures/ is the exception and is tracked.
+/data/*
+!/data/fetch.py
+!/data/README.md
+
+# Study output. Only the small summary artifacts are tracked; the bulk (LP
+# dumps, per-iteration solver logs) is regenerable and is not.
+/results/**
+!/results/.gitkeep
+
+*.log
+*.lp
+*.nl
+*.sol

@@ -1,0 +1,5 @@
+# case ~/robust_opf/tests/fixtures/case_ACTIVSg200.m
+# matpower_version 8.1
+f,27479.64330609452
+max_abs_pf_pu,3.7178999999272988
+sum_pg_pu,14.756899999999995
