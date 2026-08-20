@@ -192,13 +192,13 @@ def bus_cut_key(ev: RiskEval, bus: int) -> Tuple:
     a new sign pattern gives a new hyperplane".  Keying on the bus alone refuses
     a genuinely new and valid cut; keying on nothing re-adds the identical
     hyperplane every iteration and the loop stops making progress.
+
+    The key is the cut's own, `BusCut.key`, reached by building the cut this bus
+    would give.  The separation therefore skips a component on exactly the
+    condition under which the master already holds its hyperplane; two
+    independent notions of "the same cut" would eventually disagree.
     """
-    bus = int(bus)
-    branch_signs = tuple(int(ev.branch_sign.get(b, 0))
-                         for b in ev.incidence.get(bus, ()))
-    gen_signs = tuple(int(ev.gen_sign.get(g, 0))
-                      for g in ev.gen_incidence.get(bus, ()))
-    return (bus, branch_signs, gen_signs)
+    return build_bus_cuts(ev, [int(bus)])[0].key
 
 
 def select(ev: RiskEval,

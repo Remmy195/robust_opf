@@ -159,6 +159,20 @@ class BusCut:
     demand: float
 
     @property
+    def key(self) -> tuple:
+        """What identifies this hyperplane, for the Section 3 exclusion.
+
+        The bus AND its sign pattern together: a repeated bus under a new sign
+        pattern is a different hyperplane and a genuinely new cut.  Keyed off
+        the cut rather than off the evaluation that produced it, so that the
+        pool's record of what it holds and the separation's record of what to
+        skip cannot drift apart -- there is one definition, and it is this one.
+        """
+        return (self.bus,
+                tuple(sorted(self.branch_pos)), tuple(sorted(self.branch_neg)),
+                tuple(sorted(self.gen_pos)), tuple(sorted(self.gen_neg)))
+
+    @property
     def is_empty(self) -> bool:
         """A cut with no terms reads ``Phi >= 0``, which the model already has."""
         return not (self.branch_pos or self.branch_neg
@@ -181,12 +195,25 @@ class Master:
                  network: Network,
                  modfile: str = "master.mod",
                  solver: Optional[SolverConfig] = None,
-                 log: Optional[Callable[[str], None]] = None):
+                 log: Optional[Callable[[str], None]] = None,
+                 line_cut_capacity: int = 0,
+                 bus_cut_capacity: int = 0):
+        """`*_cut_capacity` sizes the pool; the network's own size is the floor.
+
+        MAX_CUTS and MAX_BUS_CUTS index declared entities, so they are set once
+        here and never afterwards.  The line families cannot outgrow the network
+        -- the separation excludes branches already cut -- but the bus family
+        can: it excludes by bus AND sign pattern, so one bus may legitimately
+        carry several cuts and a long run can need more than `numbuses` of them.
+        The caller therefore states the budget it intends to spend.
+        """
         self.network = network
         self.log = log or _noop
         self.solver = solver or SolverConfig()
         self.modfile = modfile
         self.is_ac = os.path.basename(modfile).endswith("_ac.mod")
+        self.line_cut_capacity = max(1, network.numbranches, int(line_cut_capacity))
+        self.bus_cut_capacity = max(1, network.numbuses, int(bus_cut_capacity))
 
         path = modfile if os.path.isabs(modfile) else os.path.join(MODFILE_DIR, modfile)
         if not os.path.exists(path):
@@ -203,7 +230,7 @@ class Master:
         self._n_line_cuts = 0
         self._n_bus_cuts = 0
         self._line_cut_ids: List[int] = []
-        self._bus_cut_keys: set = set()
+        self._bus_cuts: List[BusCut] = []
 
         self._load_network()
 
@@ -325,8 +352,8 @@ class Master:
             branches_t[count].setValues(list(bus.tobranchids.values()))
             bus_gens[count].setValues(list(bus.genidsbycount))
 
-        ampl.get_parameter("MAX_CUTS").set(max(1, net.numbranches))
-        ampl.get_parameter("MAX_BUS_CUTS").set(max(1, net.numbuses))
+        ampl.get_parameter("MAX_CUTS").set(self.line_cut_capacity)
+        ampl.get_parameter("MAX_BUS_CUTS").set(self.bus_cut_capacity)
         ampl.get_parameter("nCUT").set(0)
         ampl.get_parameter("nBUSCUT").set(0)
 
@@ -361,14 +388,29 @@ class Master:
         return list(self._line_cut_ids)
 
     @property
+    def bus_cuts(self) -> List[BusCut]:
+        """The eq (6c) cuts this master holds, in the order they were added.
+
+        The pool is readable because Section 3.4 transfers it: the DC master's
+        pool is appended to the AC master unchanged.
+        """
+        return list(self._bus_cuts)
+
+    @property
     def bus_cut_keys(self) -> set:
-        return set(self._bus_cut_keys)
+        """Exclusion keys for what the pool already holds.  See `BusCut.key`."""
+        return {cut.key for cut in self._bus_cuts}
 
     def add_line_cuts(self, branch_ids: Sequence[int]) -> int:
         """Append eq (6a) or (6b) cuts for `branch_ids`.  Returns how many."""
         new = [int(b) for b in branch_ids]
         if not new:
             return 0
+        if self._n_line_cuts + len(new) > self.line_cut_capacity:
+            raise ValueError(
+                f"line cut pool would reach {self._n_line_cuts + len(new)} cuts, "
+                f"past the capacity of {self.line_cut_capacity} declared at "
+                f"construction; raise line_cut_capacity")
         choose = self.ampl.get_parameter("choose")
         for branch_id in new:
             self._n_line_cuts += 1
@@ -390,11 +432,19 @@ class Master:
         neg_gen = self.ampl.getSet("bus_cut_gen_neg")
         demand = self.ampl.get_parameter("bus_cut_demand")
 
+        wanted = sum(1 for cut in cuts if not cut.is_empty)
+        if self._n_bus_cuts + wanted > self.bus_cut_capacity:
+            raise ValueError(
+                f"bus cut pool would reach {self._n_bus_cuts + wanted} cuts, "
+                f"past the capacity of {self.bus_cut_capacity} declared at "
+                f"construction; raise bus_cut_capacity")
+
         for cut in cuts:
             if cut.is_empty:
                 continue
             self._n_bus_cuts += 1
             k = self._n_bus_cuts
+            self._bus_cuts.append(cut)
             pos_br[k].setValues(list(cut.branch_pos))
             neg_br[k].setValues(list(cut.branch_neg))
             pos_gen[k].setValues(list(cut.gen_pos))

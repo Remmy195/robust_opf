@@ -108,7 +108,7 @@ def parity_case(request):
     if case_path is None:
         if committed:
             pytest.fail(f"{case_basename} should ship with the repo")
-        pytest.skip(f"{case_basename} not available; run data/fetch.py")
+        pytest.skip(f"{case_basename} not available; run `ropf fetch`")
     meta, sections = _load_fixture(fixture_name)
     return meta, sections, read_matpower(case_path)
 
