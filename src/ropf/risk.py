@@ -127,12 +127,16 @@ def _evaluate_joule(network: Network, Pf: Dict[int, float]) -> RiskEval:
     """eq (4c): the ohmic heating of the worst line.
 
     This is the I^2 R term of the conductor heat balance, so it is the DC active
-    flow that enters, not apparent power.
+    flow that enters, not apparent power -- and `Branch.r_heat`, the nonnegative
+    heat coefficient, not the raw series resistance, which the large synthetic
+    cases give as negative on some transformer equivalents.  The master's cut
+    family (6b) uses the same coefficient, and it has to: a surrogate built on
+    one coefficient and a functional measured with another would break eq (11).
     """
     components = {}
     for count, branch in network.branches.items():
         flow = float(Pf.get(count, 0.0))
-        components[count] = branch.r * flow * flow
+        components[count] = branch.r_heat * flow * flow
     value = max(components.values(), default=0.0)
     return RiskEval("joule_loss_max", value, components)
 

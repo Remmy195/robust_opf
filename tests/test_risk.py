@@ -243,3 +243,38 @@ def test_empty_cut_is_recognised(net):
     assert bare, "fixture has no zero-demand bus"
     cuts = risk.build_bus_cuts(ev, bare[:1])
     assert cuts[0].is_empty
+
+
+def test_negative_series_resistance_contributes_no_heat():
+    """eq (4c) is a dissipation; a branch does not cool when it is loaded.
+
+    A negative series resistance is a fitting artefact of a three-winding
+    transformer equivalent, and every rung from ACTIVSg10k up carries one --
+    178 branches on 10k, 447 on 25k, 1,216 on 70k.  Left raw, `Phi >= r P^2`
+    with r < 0 is a CONCAVE constraint and the master stops being convex.
+    """
+    from ropf.network import Branch
+
+    branch = Branch(count=1, f=1, id_f=1, t=2, id_t=2, r=-0.0045, x=0.01, bc=0.0,
+                    rateAmva=1.0, rateBmva=0.0, rateCmva=0.0, ratio=1.0, angle=0.0,
+                    maxangle=30.0, minangle=-30.0, status=1, defaultlimit=10.0,
+                    branchline0=0)
+    assert branch.r == -0.0045, "the raw resistance must stay exactly as given"
+    assert branch.r_heat == 0.0
+    # The admittance is built from the raw value, which is what the parity test
+    # pins; the split must not disturb it.
+    assert branch.Gff != 0.0 or branch.Bff != 0.0
+
+
+def test_joule_functional_uses_the_heat_coefficient(net, dispatch):
+    """The functional and cut family (6b) must share one coefficient.
+
+    A surrogate built on one and a functional measured with the other would
+    break eq (11), and it would break it silently, on the large cases only.
+    """
+    Pf, _ = dispatch
+    ev = risk.evaluate("joule_loss_max", net, Pf)
+    assert all(value >= 0.0 for value in ev.components.values())
+    for count, branch in net.branches.items():
+        assert ev.components[count] == pytest.approx(
+            branch.r_heat * Pf[count] ** 2)

@@ -38,6 +38,8 @@ param Bs {i in buses} default 0;
 param Pd {i in buses};
 param Qd {i in buses};
 param U  {e in branches} >= 0;
+# The Joule heat coefficient of eq (4c), max(0, series resistance); see
+# `Branch.r_heat` in ropf/network.py.
 param r  {e in branches} >= 0 default 0;
 
 param Pmax {g in gens};  param Pmin {g in gens};

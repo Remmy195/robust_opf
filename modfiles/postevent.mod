@@ -71,8 +71,10 @@ param Pg_lo {g in gens};
 param Pg_hi {g in gens};
 
 # eq (6g): a surviving reference bus.  The network is connected by the time this
-# model is reached, so the choice only fixes the gauge.
-param ref_bus symbolic in buses;
+# model is reached, so the choice only fixes the gauge.  Not `symbolic`: bus
+# index sets in this study are numeric counts, and a symbolic parameter over a
+# numeric set is accepted but means something else.
+param ref_bus in buses;
 
 # --- variables ---------------------------------------------------------------
 var theta {i in buses};
@@ -114,6 +116,17 @@ subject to Pf_def {e in branches}:
 # --- eq (6c): balance, with the shed entering as a reduction in demand --------
 # From-end flows at both ends, as in (M): the DC model is lossless and the phase
 # shift injections cancel, so the to-end flow is exactly -Pf.
+#
+# alive_bus multiplies the demand and the shunt because a removed bus takes its
+# load with it.  Without that factor the row at a removed bus reads
+# 0 = -Pd_i - Gs_i, which is infeasible at every removed bus carrying load --
+# so a disfigurement that removed any load bus would be reported as a system
+# with no feasible post-event dispatch rather than as what it is.  L_i is
+# already held at zero there by its own bound, so the demand a removed bus
+# takes with it is NOT counted as lost load; eq (6f) sums L over the SURVIVING
+# buses only.  The row stays present and vacuous, so changing alive_bus never
+# makes AMPL regenerate the constraint set.
 subject to Pbalance {i in buses}:
     (sum {e in branches_f[i]} Pf[e]) - (sum {e in branches_t[i]} Pf[e])
-    = (sum {g in bus_gens[i]} Pg[g]) - (Pd[i] - L[i]) - Gs[i];
+    = (sum {g in bus_gens[i]} Pg[g])
+      - alive_bus[i] * (Pd[i] - L[i]) - alive_bus[i] * Gs[i];

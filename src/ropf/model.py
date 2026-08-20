@@ -279,7 +279,9 @@ class Master:
             bus_f[count] = br.id_f
             bus_t[count] = br.id_t
             U[count] = br.limit
-            r[count] = br.r
+            # The nonnegative heat coefficient, not the raw series
+            # resistance.  See `Branch.r_heat`.
+            r[count] = br.r_heat
             maxangle[count] = br.maxangle_rad
             minangle[count] = br.minangle_rad
             bdc[count] = br.bdc

@@ -170,6 +170,22 @@ class Branch:
         self.Gtt = self.Ytt.real
         self.Btt = self.Ytt.imag
 
+        # --- the Joule heat coefficient, eq (4c) ------------------------------
+        # phi^joule is r_e P_e^2, a dissipation, and a branch does not cool when
+        # it is loaded.  A NEGATIVE series resistance is a fitting artefact of a
+        # three-winding transformer equivalent and is common in the large
+        # synthetic cases: 178 branches on ACTIVSg10k, 447 on ACTIVSg25k and
+        # 1,216 on ACTIVSg70k carry one.
+        #
+        # `r` stays exactly what the case file gives, because the admittance
+        # entries above and the MATPOWER parity test both depend on it.
+        # `r_heat` is what eq (4c) and cut family (6b) use.  Keeping them
+        # separate is not cosmetic: `Phi >= r_e P_e^2` with r_e < 0 is a
+        # CONCAVE constraint, so a single negative resistance would turn the
+        # master from a convex program into a nonconvex one -- and every rung
+        # from ACTIVSg10k upward has one.
+        self.r_heat = max(0.0, r)
+
         # --- DC model, MATPOWER makeBdc ---------------------------------------
         # Computed here, once, rather than at each AMPL setup site.  The two
         # injections are equal and opposite by construction, which is what lets

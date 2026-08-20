@@ -25,7 +25,11 @@ param bus_t {e in branches};
 param bdc   {e in branches};      # DC susceptance, (1/x)/tap
 param Pfinj {e in branches} default 0;   # phase-shift injection, -bdc * shift
 param U     {e in branches} >= 0;        # line rating, p.u.
-param r     {e in branches} >= 0 default 0;   # series resistance, for (6b)
+# The Joule HEAT coefficient of eq (4c): max(0, series resistance).  A
+# negative series resistance -- a transformer-equivalent artefact carried by
+# every rung from ACTIVSg10k up -- would make the cut below concave.  See
+# `Branch.r_heat` in ropf/network.py.
+param r     {e in branches} >= 0 default 0;
 param Pd    {i in buses};
 param Gs    {i in buses} default 0;
 param Pmax  {g in gens};
