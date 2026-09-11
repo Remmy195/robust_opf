@@ -19,23 +19,13 @@ pip install -e ".[dev,study]"
 
 ## Case data
 
-The ACTIVSg cases are not included. Download them from the Texas A&M Electric
-Grid Test Case Repository and unpack them into `data/`:
-
-```bash
-cd data
-for z in /path/to/ACTIVSg*.zip; do
-    unzip -j -o "$z" 'case_ACTIVSg*.m' '*.dyr' '*.aux'
-done
-```
-
-ACTIVSg70k comes as a folder; copy its `.m`, `.dyr` and `.aux` files into
-`data/` by hand.
+The six ACTIVSg cases are in `data/`. See [data/README.md](data/README.md) for
+their source, licence and citation.
 
 ## Run
 
 ```bash
-ropf solve configs/activs200_flow_baseline.conf   # one case, no download needed
+ropf solve configs/activs200_flow_baseline.conf   # one case
 ropf ladder configs/ladder.conf --all             # full study
 ropf ladder configs/ladder.conf --status          # progress
 ```

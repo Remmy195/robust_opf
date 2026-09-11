@@ -5,11 +5,16 @@ __pycache__/
 .venv/
 venv/
 
-# Case data is not committed: the six TAMU distributions are ~875 MB and are
-# unpacked into here by hand (see data/README.md).  The one small case under
-# tests/fixtures/ is the exception and is tracked.
+# Case data. Only the files the code reads; ACTIVSg70k as its zip (see
+# data/README.md).
 /data/*
 !/data/README.md
+!/data/case_ACTIVSg*.m
+!/data/ACTIVSg*.aux
+!/data/ACTIVSg*.dyr
+!/data/ACTIVSg70k.zip
+/data/ACTIVSg70k.aux
+/data/ACTIVSg70k*.dyr
 
 # Study output. Only the small summary artifacts are tracked; the bulk (LP
 # dumps, per-iteration solver logs) is regenerable and is not.

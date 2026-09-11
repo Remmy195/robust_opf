@@ -1,23 +1,25 @@
 # Case data
 
-The six ladder instances are TAMU synthetic grids and are **not** committed: the
-full distributions are about 875 MB. Texas A&M serves them from a landing page
-that requires accepting terms, so they are downloaded and unpacked by hand into
-this directory — see the [top-level README](../README.md) for the exact
-commands.
+The six ACTIVSg synthetic grids from the Texas A&M Electric Grid Test Case
+Repository, https://electricgrids.engr.tamu.edu
 
-Each distribution carries more than the `.m` case file. The `.dyr` gives machine
-inertia and governor droop, and the `.aux` gives generator MVA bases, AGC
-participation factors and the vendor N-1 contingency list; Section 4's frequency
-screen, post-event model and class (c) need all three, so keep the whole
-distribution rather than extracting the case alone.
+Each case has its MATPOWER file (`case_ACTIVSg*.m`), PowerWorld `.aux` and
+PSS/E `.dyr`. ACTIVSg70k is kept as its original zip because its `.aux` is over
+GitHub's 100 MB file limit; the code reads the `.aux` and `.dyr` from inside it.
 
-Two irregularities in how these are published are handled by
-`ropf.counterfactual.dynamics.locate` and should not be "tidied" away:
+## Licence
 
-* `ACTIVSg25k` names its dynamics file `ACTIVSg25k.dyr`, not
-  `ACTIVSg25k_dynamics.dyr` as every other instance does.
-* `ACTIVSg70k` ships as an unpacked directory rather than a zip archive.
+Copyright (c) 2017-2018 A.B. Birchfield, T. Xu, K.M. Gegner, K.S. Shetye and
+T.J. Overbye. Licensed under the Creative Commons Attribution 4.0 International
+license, http://creativecommons.org/licenses/by/4.0/
 
-`tests/fixtures/case_ACTIVSg200.m` is committed, at 56 KB, so that the MATPOWER
-parity test runs on a fresh clone with no download.
+Cite when publishing results based on this data:
+
+1. A.B. Birchfield, T. Xu, K.M. Gegner, K.S. Shetye, T.J. Overbye, "Grid
+   Structural Characteristics as Validation Criteria for Synthetic Networks,"
+   IEEE Transactions on Power Systems, vol. 32, no. 4, pp. 3258-3265, July 2017.
+   DOI: 10.1109/TPWRS.2016.2616385
+2. For ACTIVSg70k, also: A.B. Birchfield, T. Xu, T.J. Overbye, "Power Flow
+   Convergence and Reactive Power Planning in the Creation of Large Synthetic
+   Grids," IEEE Transactions on Power Systems, 2018.
+   DOI: 10.1109/TPWRS.2018.2813525

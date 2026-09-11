@@ -1,0 +1,6 @@
+# Case files are stored byte for byte, so every checkout has the SHA-256 that
+# solution_summary.json records.
+/data/*.m    -text
+/data/*.aux  -text
+/data/*.dyr  -text
+/data/*.zip  binary
