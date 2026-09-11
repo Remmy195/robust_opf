@@ -493,4 +493,4 @@ def resolve_case(case: str, near: Optional[str] = None) -> str:
 
     tried = "\n  ".join(candidates)
     raise ConfigError(f"case file {case!r} not found. Tried:\n  {tried}\n"
-                      f"Unpack the ACTIVSg distributions into data/; see the README.")
+                      f"The ACTIVSg cases ship in data/.")

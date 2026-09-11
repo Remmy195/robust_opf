@@ -73,11 +73,9 @@ def _close(actual, expected, what):
 
 
 def _case_path(basename):
-    """Prefer the committed fixture case, then the fetched data tree.
+    """Prefer the fixture case, then ``data/``, then ``ROPF_DATA_DIR`` if set.
 
-    No absolute path to any particular machine appears here.  A larger case is
-    found only if the distribution has been unpacked into ``data/``, or if the caller
-    points ``ROPF_DATA_DIR`` at a tree that has it.
+    No absolute path to any particular machine appears here.
     """
     roots = [FIXTURES,
              os.path.join(os.path.dirname(__file__), os.pardir, "data")]
@@ -94,7 +92,7 @@ def _case_path(basename):
 CASES = [
     # (fixture, case file, is the case committed with the repo?)
     ("matpower_ACTIVSg200.csv", "case_ACTIVSg200.m", True),
-    ("matpower_ACTIVSg2000.csv", "case_ACTIVSg2000.m", False),
+    ("matpower_ACTIVSg2000.csv", "case_ACTIVSg2000.m", True),
 ]
 
 
@@ -108,7 +106,7 @@ def parity_case(request):
     if case_path is None:
         if committed:
             pytest.fail(f"{case_basename} should ship with the repo")
-        pytest.skip(f"{case_basename} not available; unpack it into data/")
+        pytest.skip(f"{case_basename} not found")
     meta, sections = _load_fixture(fixture_name)
     return meta, sections, read_matpower(case_path)
 

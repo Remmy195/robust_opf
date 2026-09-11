@@ -49,7 +49,7 @@ from ..risk import METRICS
 #: The six instances: the TAMU distribution and the MATPOWER file, smallest
 #: first, which is the order a partial run follows.  Both names are needed:
 #: `texas2k` is what a config says, `ACTIVSg2000` what the .dyr and .aux are
-#: called.  Getting the files into data/ is a one-off; see the README.
+#: called.  All of them ship in data/.
 INSTANCES: Dict[str, Tuple[str, str]] = {
     "activs200": ("ACTIVSg200", "case_ACTIVSg200.m"),
     "activs500": ("ACTIVSg500", "case_ACTIVSg500.m"),
@@ -702,8 +702,8 @@ def run_combo(config: LadderConfig, combo: Combo,
     case = combo.case_path()
     if not os.path.isfile(case):
         raise FileNotFoundError(
-            f"{combo.instance}: {case} is not there. Unpack it from "
-            f"the ACTIVSg distributions; see the README.")
+            f"{combo.instance}: {case} is not there. The ACTIVSg cases "
+            f"ship in data/.")
 
     started = time.time()
     network = read_matpower(case, log)
@@ -1075,8 +1075,8 @@ def score_combo(config: ScoreConfig, combo: Combo,
     case = combo.case_path()
     if not os.path.isfile(case):
         raise FileNotFoundError(
-            f"{combo.instance}: {case} is not there. Unpack it from "
-            f"the ACTIVSg distributions; see the README.")
+            f"{combo.instance}: {case} is not there. The ACTIVSg cases "
+            f"ship in data/.")
 
     started = time.time()
     source = read_frontier(source_dir, combo, case, log)

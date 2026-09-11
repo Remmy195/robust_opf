@@ -24,7 +24,7 @@ AUX = os.path.join(DATA, "ACTIVSg200.aux")
 
 def _aux_or_skip() -> str:
     if not os.path.exists(AUX):
-        pytest.skip(f"{AUX} not unpacked; see README")
+        pytest.skip(f"{AUX} not found")
     return AUX
 
 

@@ -1,8 +1,7 @@
 """Class (c): the vendor N-1 list.
 
-The fixture is `case_ACTIVSg200.m`, the one case tracked in the repository, and
-`ACTIVSg200.aux` beside it where the distribution has been unpacked.  Tests that
-need the .aux skip when it is absent so the suite still runs on a bare clone.
+The fixture is `tests/fixtures/case_ACTIVSg200.m` with `data/ACTIVSg200.aux`.
+Tests that need the .aux skip when it is absent.
 """
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ AUX = os.path.join(DATA, "ACTIVSg200.aux")
 
 def _aux_or_skip() -> str:
     if not os.path.exists(AUX):
-        pytest.skip(f"{AUX} not unpacked; see README")
+        pytest.skip(f"{AUX} not found")
     return AUX
 
 
@@ -393,7 +392,7 @@ def test_vendor_draws_resolves_the_mixed_pair_on_activsg2000():
     aux = os.path.join(DATA, "ACTIVSg2000.aux")
     for path in (case, aux):
         if not os.path.exists(path):
-            pytest.skip(f"{path} not unpacked; see README")
+            pytest.skip(f"{path} not found")
 
     net = read_matpower(case)
     mapped, _ = vendor.vendor_draws(net, aux)

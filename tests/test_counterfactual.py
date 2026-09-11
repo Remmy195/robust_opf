@@ -266,7 +266,7 @@ def test_the_conversion_factor_is_the_load_ratio():
     big = os.path.join(os.path.dirname(FIXTURES), "..", "data",
                        "case_ACTIVSg2000.m")
     if not os.path.isfile(big):
-        pytest.skip("case_ACTIVSg2000.m not available; unpack it into data/")
+        pytest.skip("data/case_ACTIVSg2000.m not found")
     network = read_matpower(big)
     raw, converted = 1.5, LoadDamping.per_load(1.5).on_system(network)
     assert converted / raw > 100, \
