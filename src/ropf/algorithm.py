@@ -1,9 +1,6 @@
 """Algorithm 1 of Section 3, and the AC stage of Section 3.4.
 
-The loop is written to be read against the pseudocode.  Every line of
-Algorithm 1 is tagged ``ALG1-Ln`` at the code implementing it, so a line of the
-algorithm with no code under it -- or code under no line -- is visible in one
-screenful.
+Every line of the pseudocode is tagged ``ALG1-Ln`` at the code implementing it.
 
     1  solve (M) with no risk cuts, obtain x0, cost z0, surrogate Phi0
     2  rho0 <- phi(x0),  k <- 0
@@ -16,43 +13,75 @@ screenful.
     9  until rho^k/rho^0 <= 1 - eta or k = k-bar
     10 return (Pg^k, P^k, z^k, rho^k, Phi^k, Gamma^k)
 
-THE THREE STAGES.  A run names one:
+The three stages:
 
-    baseline  Algorithm 1 on (M).  The reported dispatch is the DC one.
+    baseline  Algorithm 1 on (M); the reported dispatch is the DC one.
     a2        Algorithm 1 on (M), then (M^ac) solved ONCE with the pool the DC
-              loop accumulated.  Section 3.4.  The reported dispatch is the AC
-              one; the DC stage supplies the cuts and the iteration counts.
+              loop accumulated.  Section 3.4.
     a3        Algorithm 1 on (M^ac) throughout, separating on the AC dispatch.
 
-THE AC STAGE IS ONE SOLVE, AND THERE IS NO KNOB THAT SAYS OTHERWISE.  Section
-3.4 is a transfer, not a re-separation: `run_ac_stage` calls `Master.solve`
-exactly once and takes no iteration count.  A knob defaulting to 1 would be
-enough, but only until some layer above it parsed a default of its own and
-shadowed the solver's -- which is exactly how an earlier codebase came to run
-the most expensive solve in the pipeline more times than the method calls for.
-Structure is the durable form of that default, so there is no knob at all.
+The AC stage is one solve and there is no knob saying otherwise: Section 3.4 is
+a transfer, not a re-separation, so `run_ac_stage` takes no iteration count.
 """
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Callable, List, Optional
 
 from . import risk
 from .model import Master, Solution, SolverConfig
 from .network import Network
 
-#: The three stages of the study.  See the module docstring.
 STAGES = ("baseline", "a2", "a3")
 
 DC_MODFILE = "master.mod"
 AC_MODFILE = "master_ac.mod"
 
-#: The weight grid of Section 5, as multiples of lambda*.  Geometric, because
-#: the response to lambda is concentrated and not in the same place for each
-#: functional.
+#: The weight grid of eq (weightgrid), as multiples of lambda*.  Geometric,
+#: because the response to lambda is concentrated and not in the same place for
+#: each representation.  By eq (weightstar) a multiple of lambda* is the ratio
+#: xi/(tau_hi - tau_lo), so this runs from 1/4 to 4 units of nominal cost paid
+#: per unit of nominal risk removed.
 WEIGHT_GRID = (0.0, 0.25, 0.5, 1.0, 2.0, 4.0)
+
+#: Significant digits the exchange rate is rounded to.  Without it, 0.05/0.2
+#: is 0.25000000000000006 in binary and the same study written two ways would
+#: not agree: on ACTIVSg200 that last digit moved the reported risk by 2.4e-6
+#: relative, because where the master has many optima the barrier picks among
+#: them on numerical detail alone.
+RATE_SIGNIFICANT = 12
+
+
+def exchange_rate(xi: float, tau_lo: float, tau_hi: float) -> float:
+    """eq (weightstar): the multiplier xi/(tau_hi - tau_lo), so that
+    lambda = exchange_rate(...) * lambda* with lambda* = z0/rho0.
+
+    xi is a fraction of z0 and the band a fraction of rho0, so the rate is
+    dimensionless and lambda takes its units from lambda* alone.  The band is
+    NOT the eta of the termination test: eta is a target the loop exits on, the
+    band is what the operator will pay, stated before the loop runs.
+    """
+    if xi < 0.0:
+        raise ValueError(
+            f"xi = {xi} is a cost tolerance as a fraction of z0 and cannot be "
+            f"negative; a negative tolerance would price risk below zero")
+    if not 0.0 < tau_lo < tau_hi <= 1.0:
+        raise ValueError(
+            f"the risk band must satisfy 0 < tau_lo < tau_hi <= 1, got "
+            f"tau_lo = {tau_lo}, tau_hi = {tau_hi}. The band is a fraction of "
+            f"rho0: tau_hi above 1 asks for more risk than the nominal "
+            f"dispatch carries, and tau_lo >= tau_hi is an empty band whose "
+            f"width would divide by zero or invert the price.")
+    return _round_significant(xi / (tau_hi - tau_lo), RATE_SIGNIFICANT)
+
+
+def _round_significant(value: float, digits: int) -> float:
+    if value == 0.0 or not math.isfinite(value):
+        return value
+    return round(value, digits - 1 - int(math.floor(math.log10(abs(value)))))
 
 
 def _noop(_message: str) -> None:
@@ -68,13 +97,16 @@ def _noop(_message: str) -> None:
 class AlgorithmConfig:
     """The Require line of Algorithm 1: phi, lambda, kappa, eta, k-bar.
 
-    The weight is given as a multiple of lambda* = z0/rho0, since lambda* is not
-    known until the nominal solve of line 1 has run.  `risk_weight` overrides it
-    with an absolute value in $/p.u. for a caller that has one.
+    The weight is a multiple of lambda* = z0/rho0, which is not known until the
+    nominal solve of line 1 has run.  `risk_weight` overrides it with an
+    absolute value in $/p.u.
     """
 
     metric: str = "max_active_flow"
     stage: str = "baseline"
+    #: The component set eq (10a) is maximized over, `risk.FLOW_DOMAINS`.
+    #: Meaningful for max_active_flow alone.
+    flow_domain: str = "all"
     #: The grid point: lambda = weight_multiplier * lambda*.
     weight_multiplier: float = 1.0
     #: An absolute lambda, in $/p.u.  Set this only to bypass lambda*.
@@ -85,6 +117,14 @@ class AlgorithmConfig:
     eta: float = 0.5
     #: k-bar, the iteration limit.
     k_bar: int = 25
+    #: |Gamma| at which the surrogate has converged on the functional.
+    #: Zero, the default, disables the test; eta and k-bar are then the only
+    #: exits, as Algorithm 1 states them.
+    gamma_tol: float = 0.0
+    #: A component is reported as badly exposed at this fraction of rho^k.
+    exposure_fraction: float = risk.EXPOSURE_FRACTION
+    #: Write each master solve to this directory as ``master_k<k>.lp``.
+    lp_dir: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.metric not in risk.METRICS:
@@ -93,6 +133,13 @@ class AlgorithmConfig:
         if self.stage not in STAGES:
             raise ValueError(f"unknown stage {self.stage!r}; "
                              f"expected one of {list(STAGES)}")
+        if self.flow_domain not in risk.FLOW_DOMAINS:
+            raise ValueError(f"unknown flow domain {self.flow_domain!r}; "
+                             f"expected one of {list(risk.FLOW_DOMAINS)}")
+        if self.flow_domain != "all" and self.metric != "max_active_flow":
+            raise ValueError(f"flow_domain = {self.flow_domain!r} applies to "
+                             f"max_active_flow; {self.metric!r} ranges over a "
+                             f"different component set and would ignore it")
         if self.kappa < 1:
             raise ValueError(f"kappa must be at least 1, got {self.kappa}")
         if not 0.0 < self.eta < 1.0:
@@ -102,10 +149,17 @@ class AlgorithmConfig:
                 f"asks the functional to reach zero")
         if self.k_bar < 1:
             raise ValueError(f"k-bar must be at least 1, got {self.k_bar}")
+        if self.gamma_tol < 0.0:
+            raise ValueError(
+                f"gamma_tol is a tolerance on |Gamma| and cannot be negative, "
+                f"got {self.gamma_tol}; 0 disables the test")
         if self.weight_multiplier < 0:
             raise ValueError("the risk weight cannot be negative")
         if self.risk_weight is not None and self.risk_weight < 0:
             raise ValueError("the risk weight cannot be negative")
+        if not 0.0 < self.exposure_fraction <= 1.0:
+            raise ValueError(f"the exposure fraction must lie in (0, 1], got "
+                             f"{self.exposure_fraction}")
 
     @property
     def runs_on_ac(self) -> bool:
@@ -135,8 +189,7 @@ class Iterate:
     surrogate: float
     #: rho^k = phi(x^k), the functional at this iterate.
     rho: float
-    #: Gamma^k = (rho^k - Phi^k)/rho^k.  Recorded every iteration, never tested:
-    #: Algorithm 1 has exactly two exits and this is not one of them.
+    #: Gamma^k = (rho^k - Phi^k)/rho^k, the gap `gamma_tol` exits on.
     gamma: float
     #: rho^k/rho^0, the quantity the eta exit tests.
     ratio: float
@@ -145,33 +198,46 @@ class Iterate:
     n_bus_cuts: int
     cuts_added: int
     solve_time_s: float
+    #: The badly exposed components at this iterate, worst first: branch counts
+    #: for the line functionals, bus counts for the bus functional.
+    exposed: List[int] = field(default_factory=list)
+    #: Where this solve's LP was written, when LP output is on.
+    lp_path: Optional[str] = None
 
     @property
     def solved(self) -> bool:
         return self.status == "solved"
 
+    @property
+    def n_exposed(self) -> int:
+        return len(self.exposed)
+
 
 @dataclass
 class Result:
-    """What one run of Algorithm 1 returns, plus what the study needs to record."""
+    """What one run of Algorithm 1 returns, plus what the study records."""
 
     case: str
     metric: str
     stage: str
 
-    #: lambda* = z0/rho0, eq (20) of the cited work, our eq (weightstar).
+    #: lambda* = z0/rho0, our eq (weightstar).
     lambda_star: float
     #: The lambda this run actually priced risk at.
     risk_weight: float
     weight_multiplier: Optional[float]
 
-    #: The nominal quantities of line 1-2, at lambda = 0 with no cuts.
+    #: The nominal quantities of lines 1-2, at lambda = 0 with no cuts.
     z0: float
     rho0: float
     phi0: float
 
+    #: The component set eq (10a) was maximized over, carried beside `metric`
+    #: because a rho is not comparable across domains.
+    flow_domain: str = "all"
+
     iterations: List[Iterate] = field(default_factory=list)
-    #: The single (M^ac) solve of Section 3.4.  Set for stage a2 only.
+    #: The single (M^ac) solve of Section 3.4.  Stage a2 only.
     ac: Optional[Iterate] = None
 
     #: Which exit was taken.  See `TERMINATIONS`.
@@ -207,14 +273,9 @@ class Result:
 
     @property
     def risk_reduction(self) -> float:
-        """1 - rho^end/rho^0 against THIS RUN'S OWN nominal solve.
-
-        The base is the nominal solve of Algorithm 1 line 1, which on stage a2
-        is the DC one -- so for a2 this is an AC dispatch measured against a DC
-        nominal, and it is not the number the frontier reports.  The frontier
-        normalizes each stage against its own lambda = 0 row instead; see
-        `ropf.results`.  Kept here because it is the ratio the eta exit tests.
-        """
+        """1 - rho^end/rho^0 against THIS RUN'S OWN nominal solve, which on
+        stage a2 is the DC one.  The frontier normalizes each stage against its
+        own lambda = 0 row instead; see `ropf.results`."""
         return 1.0 - self.reported.ratio
 
     @property
@@ -229,9 +290,10 @@ class Result:
 #: a bug, not a new outcome.
 TERMINATIONS = (
     "eta_target",            # ALG1-L9, first exit: rho^k/rho^0 <= 1 - eta
-    "iteration_limit",       # ALG1-L9, second exit: k = k-bar
+    "iteration_limit",       # ALG1-L9, last exit: k = k-bar
     "zero_weight",           # lambda = 0; see run_loop
     "separation_exhausted",  # no component left to cut; Lemma 2.11
+    "converged",             # ALG1-L9, second exit: |Gamma^k| <= gamma_tol
     "nominal_risk_zero",     # rho0 = 0, so lambda* and the ratio are undefined
     "infeasible",            # a master did not solve
 )
@@ -250,8 +312,8 @@ def run(network: Network,
     """Run one stage end to end and return its `Result`.
 
     `solver` drives the cutting-plane loop and `ac_solver` the Section 3.4 AC
-    solve; on stage a3, where the loop is itself on (M^ac), `ac_solver` is used
-    for the loop and `solver` is unused.
+    solve; on stage a3 the loop is itself on (M^ac), so `ac_solver` drives it
+    and `solver` is unused.
     """
     emit = log or _noop
     started = time.time()
@@ -265,11 +327,16 @@ def run(network: Network,
          f"kappa = {config.kappa}, eta = {config.eta:g}, "
          f"k-bar = {config.k_bar}\n")
 
-    master = _build_master(network, modfile, loop_solver, config, emit)
+    # kappa cuts an iteration for at most k-bar iterations, so the pool cannot
+    # exceed kappa * k-bar however the run goes.
+    budget = config.kappa * config.k_bar
+    master = Master(network, modfile, loop_solver, emit,
+                    line_cut_capacity=budget, bus_cut_capacity=budget)
+    if config.lp_dir:
+        master.set_lp_output(config.lp_dir)
+
     result = run_loop(network, master, config, emit)
 
-    # ALG1 is over.  Section 3.4: the pool is appended to (M^ac), which is
-    # solved once.
     if config.has_ac_stage and result.termination != "infeasible":
         run_ac_stage(network, master, result, config,
                      ac_solver or SolverConfig(name="knitro"), emit)
@@ -278,23 +345,6 @@ def run(network: Network,
     emit(f" run finished in {result.total_time_s:.1f}s: {result.termination}"
          f" ({result.termination_detail})\n")
     return result
-
-
-def _build_master(network: Network,
-                  modfile: str,
-                  solver: SolverConfig,
-                  config: AlgorithmConfig,
-                  emit: Callable[[str], None]) -> Master:
-    """A master sized for the pool this configuration can generate.
-
-    kappa cuts an iteration for at most k-bar iterations, so the pool cannot
-    exceed kappa * k-bar however the run goes.  The bus family can exceed the
-    bus count -- one bus may carry several sign patterns -- so the capacity is
-    stated rather than inferred from the network.
-    """
-    budget = config.kappa * config.k_bar
-    return Master(network, modfile, solver, emit,
-                  line_cut_capacity=budget, bus_cut_capacity=budget)
 
 
 def run_loop(network: Network,
@@ -307,16 +357,18 @@ def run_loop(network: Network,
     master.set_risk_family(metric)
 
     # ---- ALG1-L1: (M) with no risk cuts, at lambda = 0 ---------------------
-    # The nominal quantities are defined at lambda = 0 (Table 3 caption), so the
-    # weight is zeroed for this solve whatever the run's own lambda is.
+    # The nominal quantities are defined at lambda = 0, so the weight is zeroed
+    # for this solve whatever the run's own lambda is.
     emit("\n ALG1-L1  nominal solve: lambda = 0, no cuts\n")
     master.set_risk_weight(0.0)
+    master.lp_iteration = 0
     nominal = master.solve()
 
     result = Result(
         case=network.casefile or "?",
         metric=metric,
         stage=config.stage,
+        flow_domain=config.flow_domain,
         lambda_star=float("nan"),
         risk_weight=float("nan"),
         weight_multiplier=(None if config.risk_weight is not None
@@ -338,16 +390,17 @@ def run_loop(network: Network,
         return result
 
     # ---- ALG1-L2: rho0 <- phi(x0), k <- 0 ----------------------------------
-    ev = risk.evaluate(metric, network, nominal.Pf)
+    ev = risk.evaluate(metric, network, nominal.Pf, config.flow_domain)
     rho0 = ev.value
     result.rho0 = rho0
-    result.iterations.append(_iterate(0, nominal, rho0, rho0, master, 0))
+    result.iterations.append(
+        _iterate(0, nominal, rho0, rho0, master, 0, ev, config))
     emit(f" ALG1-L2  z0 = {result.z0:.6f} $, rho0 = {rho0:.6f} p.u.\n")
+    _report_exposure(ev, config, network, nominal.Pf, emit)
 
     if rho0 <= 0.0:
-        # lambda* = z0/rho0 and the exit test rho^k/rho^0 are both undefined.
-        # This is a degenerate case, not a converged one, and is recorded as
-        # such rather than being papered over with a fallback weight.
+        # lambda* = z0/rho0 and the exit test are both undefined.  A degenerate
+        # case, not a converged one, and recorded as such.
         result.lambda_star = float("nan")
         result.risk_weight = 0.0
         result.termination = "nominal_risk_zero"
@@ -359,21 +412,16 @@ def run_loop(network: Network,
 
     # ---- eq (weightstar): lambda* = z0/rho0 --------------------------------
     result.lambda_star = result.z0 / rho0
-    if config.risk_weight is not None:
-        risk_weight = float(config.risk_weight)
-    else:
-        risk_weight = config.weight_multiplier * result.lambda_star
+    risk_weight = (float(config.risk_weight) if config.risk_weight is not None
+                   else config.weight_multiplier * result.lambda_star)
     result.risk_weight = risk_weight
     emit(f" lambda* = z0/rho0 = {result.lambda_star:.6f} $/p.u.;"
          f" this run prices risk at lambda = {risk_weight:.6f} $/p.u.\n")
 
     if risk_weight == 0.0:
-        # Phi enters the master in the objective, at price lambda, and in the
-        # cuts, which bound it from below only.  At lambda = 0 it is therefore
-        # free and costless, so no cut can change the dispatch: every iteration
-        # would return x0 and rho^k would sit at rho^0 until k-bar.  The
-        # lambda = 0 point of the weight grid IS the nominal solve, and running
-        # the loop to discover that costs k-bar solves per rung.
+        # Phi enters the objective at price lambda and the cuts bound it from
+        # below only, so at lambda = 0 it is free: no cut can change the
+        # dispatch and every iteration would return x0 until k-bar.
         result.termination = "zero_weight"
         result.termination_detail = (
             "lambda = 0, so the cut pool cannot change the dispatch and the "
@@ -400,10 +448,8 @@ def run_loop(network: Network,
             added = master.add_line_cuts(selected)
 
         if added == 0:
-            # Nothing left to separate: every component of positive
-            # contribution already carries its cut.  This is the finite
-            # termination of the greedy kernel (Lemma 2.11), and the master
-            # would return the same dispatch for the rest of the budget.
+            # Every component of positive contribution already carries its cut:
+            # the finite termination of the greedy kernel (Lemma 2.11).
             result.termination = "separation_exhausted"
             result.termination_detail = (
                 f"no new cut at k = {k}: every component the separation would "
@@ -414,6 +460,7 @@ def run_loop(network: Network,
         # ---- ALG1-L7: solve (M) --------------------------------------------
         emit(f"\n ALG1-L7  k = {k}, pool {master.n_line_cuts} line cuts +"
              f" {master.n_bus_cuts} bus cuts (+{added} this iteration)\n")
+        master.lp_iteration = k
         solution = master.solve()
 
         if not solution.solved:
@@ -426,8 +473,9 @@ def run_loop(network: Network,
             break
 
         # ---- ALG1-L8: rho^k, Gamma^k ---------------------------------------
-        ev_k = risk.evaluate(metric, network, solution.Pf)
-        iterate = _iterate(k, solution, ev_k.value, rho0, master, added)
+        ev_k = risk.evaluate(metric, network, solution.Pf, config.flow_domain)
+        iterate = _iterate(k, solution, ev_k.value, rho0, master, added,
+                           ev_k, config)
         result.iterations.append(iterate)
         result.dispatch = solution
         incumbent_ev = ev_k
@@ -435,13 +483,25 @@ def run_loop(network: Network,
         emit(f" ALG1-L8  rho^{k} = {iterate.rho:.6f}, Phi^{k} = "
              f"{iterate.surrogate:.6f}, Gamma^{k} = {iterate.gamma:.6f}, "
              f"rho^{k}/rho^0 = {iterate.ratio:.6f}\n")
+        _report_exposure(ev_k, config, network, solution.Pf, emit)
 
-        # ---- ALG1-L9: until rho^k/rho^0 <= 1 - eta or k = k-bar ------------
+        # ---- ALG1-L9: until rho^k/rho^0 <= 1 - eta, |Gamma^k| <= gamma_tol,
+        #      or k = k-bar ---------------------------------------------------
         if iterate.ratio <= 1.0 - config.eta:
             result.termination = "eta_target"
             result.termination_detail = (
                 f"rho^{k}/rho^0 = {iterate.ratio:.6f} <= 1 - eta = "
                 f"{1.0 - config.eta:.6f}")
+            emit(f" ALG1-L9  {result.termination_detail}\n")
+            break
+        # After the eta target, so a run meeting both records the target it
+        # was asked for; the two stop at the same k on the same dispatch.
+        if config.gamma_tol > 0.0 and abs(iterate.gamma) <= config.gamma_tol:
+            result.termination = "converged"
+            result.termination_detail = (
+                f"Gamma^{k} = {iterate.gamma:.3e} <= gamma_tol = "
+                f"{config.gamma_tol:g} with rho^k/rho^0 = {iterate.ratio:.6f} "
+                f"against the target {1.0 - config.eta:.6f}")
             emit(f" ALG1-L9  {result.termination_detail}\n")
             break
         if k == config.k_bar:
@@ -463,16 +523,14 @@ def run_ac_stage(network: Network,
                  log: Optional[Callable[[str], None]] = None) -> Iterate:
     """Section 3.4: append the DC pool to (M^ac) and solve it ONCE.
 
-    A transfer, not a re-separation.  The cuts are appended exactly as the DC
-    loop accumulated them -- same branches, same bus sign patterns -- because
-    what makes the hybrid a hand-off is that nothing is separated again here.
+    The cuts are appended exactly as the DC loop accumulated them -- nothing is
+    separated again here, which is what makes the hybrid a hand-off.
 
     THIS RUNS EVEN WHEN THE POOL IS EMPTY, which is the lambda = 0 grid point:
-    there, (M^ac) with no cuts is the plain AC-OPF, and that is exactly the
-    nominal AC dispatch the stage's frontier and the counterfactual's paired
-    comparison need.  Skipping it would leave stage a2 reporting a DC dispatch
-    at lambda = 0 and AC dispatches everywhere else, so the difference between
-    the grid points would no longer be attributable to lambda alone.
+    (M^ac) with no cuts is the plain AC-OPF, and that is the nominal AC
+    dispatch the stage's frontier needs.  Skipping it would leave a2 reporting
+    a DC dispatch at lambda = 0 and AC ones elsewhere, so the difference across
+    grid points would no longer be attributable to lambda alone.
     """
     emit = log or _noop
 
@@ -489,14 +547,16 @@ def run_ac_stage(network: Network,
     ac.add_bus_cuts(dc_master.bus_cuts)
 
     solution = ac.solve()
-    ev = risk.evaluate(config.metric, network, solution.Pf)
-    iterate = _iterate(result.k_end, solution, ev.value, result.rho0, ac, 0)
+    ev = risk.evaluate(config.metric, network, solution.Pf, config.flow_domain)
+    iterate = _iterate(result.k_end, solution, ev.value, result.rho0, ac, 0,
+                       ev, config)
     result.ac = iterate
 
     if solution.solved:
         result.dispatch = solution
         emit(f" Section 3.4  AC dispatch: z = {iterate.cost:.6f} $, "
              f"rho = {iterate.rho:.6f} p.u., Gamma = {iterate.gamma:.6f}\n")
+        _report_exposure(ev, config, network, solution.Pf, emit)
     else:
         # The DC result stands as the run's outcome; the AC iterate records
         # what happened rather than being discarded.
@@ -511,21 +571,62 @@ def run_ac_stage(network: Network,
 # Bookkeeping
 ###############################################################################
 
+#: How many exposed components the transcript names before summarizing.
+EXPOSURE_REPORT_LIMIT = 10
+
+
+def _report_exposure(ev, config: AlgorithmConfig, network: Network, Pf,
+                     emit: Callable[[str], None]) -> None:
+    """Name the components carrying too much exposure at this iterate.
+
+    Two lists, because they answer different questions: the exposed set is
+    relative to the active functional, and the overloaded set is absolute,
+    against each branch's own rateA.
+    """
+    bad = risk.exposed(ev, config.exposure_fraction)
+    if bad:
+        noun = "bus" if ev.is_bus_family else "line"
+        emit(f" exposed  {_count(bad, noun)} at or above "
+             f"{config.exposure_fraction:g} of rho: {_list(bad)}\n")
+
+    over = risk.overloaded(network, Pf)
+    if over:
+        emit(f" overload {_count(over, 'line')} at or above the rating: "
+             f"{_list(over)}\n")
+
+
+def _count(components: List[int], noun: str) -> str:
+    """"1 line", "3 lines", "2 buses"."""
+    if len(components) == 1:
+        return f"1 {noun}"
+    suffix = "es" if noun.endswith("s") else "s"
+    return f"{len(components)} {noun}{suffix}"
+
+
+def _list(components: List[int]) -> str:
+    """The counts, worst first, truncated at `EXPOSURE_REPORT_LIMIT`."""
+    shown = ", ".join(str(c) for c in components[:EXPOSURE_REPORT_LIMIT])
+    if len(components) > EXPOSURE_REPORT_LIMIT:
+        shown += f", +{len(components) - EXPOSURE_REPORT_LIMIT} more"
+    return shown
+
 
 def _iterate(k: int, solution: Solution, rho: float, rho0: float,
-             master: Master, cuts_added: int) -> Iterate:
+             master: Master, cuts_added: int,
+             ev=None, config: Optional[AlgorithmConfig] = None) -> Iterate:
     """Assemble one trace row.  Gamma and the ratio are undefined at rho = 0."""
-    gamma = (rho - solution.phi) / rho if rho else float("nan")
-    ratio = rho / rho0 if rho0 else float("nan")
+    fraction = config.exposure_fraction if config else risk.EXPOSURE_FRACTION
     return Iterate(k=k,
                    status=solution.status,
                    cost=solution.gen_cost,
                    surrogate=solution.phi,
                    rho=rho,
-                   gamma=gamma,
-                   ratio=ratio,
+                   gamma=(rho - solution.phi) / rho if rho else float("nan"),
+                   ratio=rho / rho0 if rho0 else float("nan"),
                    objective=solution.objective,
                    n_line_cuts=master.n_line_cuts,
                    n_bus_cuts=master.n_bus_cuts,
                    cuts_added=cuts_added,
-                   solve_time_s=solution.solve_time_s)
+                   solve_time_s=solution.solve_time_s,
+                   exposed=(risk.exposed(ev, fraction) if ev is not None else []),
+                   lp_path=solution.lp_path)

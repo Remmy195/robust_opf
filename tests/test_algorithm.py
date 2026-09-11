@@ -144,7 +144,7 @@ def test_zero_weight_returns_the_nominal_dispatch(net):
 
     Phi is bounded from below by the cuts and priced at lambda in the
     objective, so at lambda = 0 it is free and no cut can move the dispatch.
-    Running the loop to discover that would cost k-bar solves per rung.
+    Running the loop to discover that would cost k-bar solves per instance.
     """
     result = _run(net, weight_multiplier=0.0, eta=0.5, k_bar=25)
     assert result.termination == "zero_weight"

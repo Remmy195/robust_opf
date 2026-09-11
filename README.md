@@ -3,7 +3,7 @@
 Companion code for the manuscript *Risk-aware optimal power flow*. It implements
 Algorithm 1 of Section 3, the three risk functionals of Section 2.3, the AC
 stage of Section 3.4, and the counterfactual campaign of Section 4, and it runs
-them over the six-rung ACTIVSg ladder of Section 5.
+them over the six-instance ACTIVSg ladder of Section 5.
 
 Every optimization model in this repository is an AMPL `.mod` file under
 [modfiles/](modfiles/). There is no model built in Python.
@@ -17,11 +17,11 @@ pip install -e ".[dev,study]"
 
 Requires Python 3.10+, an AMPL installation with a valid licence, and a solver.
 The study uses Gurobi for the linear models — (M) and (D) — and Knitro for the
-nonlinear AC master (M^ac); Ipopt works in place of Knitro at the smaller rungs.
+nonlinear AC master (M^ac); Ipopt works in place of Knitro at the smaller instances.
 
 ## The test systems
 
-The six rungs are the Texas A&M ACTIVSg synthetic grids. They are **not**
+The six instances are the Texas A&M ACTIVSg synthetic grids. They are **not**
 committed: the distributions run to about 875 MB. One small case,
 `case_ACTIVSg200.m`, is tracked under [tests/fixtures/](tests/fixtures/) so the
 test suite runs on a bare clone.
@@ -36,7 +36,7 @@ for z in ~/ACTIVSg/ACTIVSg*.zip; do
 done
 ```
 
-That covers five rungs; ACTIVSg70k ships as a directory rather than a zip, so
+That covers five instances; ACTIVSg70k ships as a directory rather than a zip, so
 copy the same three files out of it. It also pulls in a few `*_contingencies.aux`
 and `*_dynamics.aux` the study does not read, which are harmless.
 
@@ -92,16 +92,50 @@ eq (11).
 ropf solve configs/activs200_flow_baseline.conf
 ```
 
-This sweeps the weight grid for one (case, metric, stage) and writes three
-artifacts into `results/<tag>/`:
+This sweeps the weight grid for one (case, metric, stage) and writes into
+`results/<tag>/`:
 
 | file | what it holds |
 | --- | --- |
 | `solution_summary.json` | every run in full: dispatch, per-iteration trace, provenance |
 | `efficient_frontier.csv` | one row per weight — cost, risk, the Gamma gap |
 | `efficient_frontier.json` | the same rows, with the dominated ones marked |
+| `dispatch_bus.csv` | every bus at every weight |
+| `dispatch_gen.csv` | every unit at every weight, and its move from nominal |
+| `dispatch_branch.csv` | every branch at every weight: flow, loading, and the two bad-line flags |
 
-A fourth file, `run.log`, is the transcript. Nothing reads it back.
+`run.log` beside them is the transcript. Nothing reads it back.
+
+### Which lines are bad
+
+Two different questions, so two columns in `dispatch_branch.csv` and two lines
+in the transcript at every iteration:
+
+* **`high_exposure`** — the component carries at least `exposure_fraction` of
+  ρ, the run's own functional. Relative to what the run is minimizing, so under
+  `bus_flow_sum_agg` it flags buses (in `dispatch_bus.csv`) rather than lines.
+  `exposure_fraction = 1` is the argmax alone; the default is 0.95.
+* **`overloaded`** — `|P_e|` is at or above the branch's own `rateA`. Absolute,
+  and independent of the run's functional. Branches the case gives no rating
+  carry the big-M substitution and are never flagged.
+
+`efficient_frontier.csv` carries the counts, `n_exposed` and `n_overloaded`,
+one row per weight.
+
+### LP files, one per iteration
+
+`write_lp = true` writes the problem of every master solve to
+`results/<tag>/lp/w<λ>/master_k<k>.lp`, labelled by the Algorithm 1 iteration
+count — `master_k000.lp` is the nominal solve of line 1. One directory per
+weight, since two weights sharing one would overwrite each other's `k`.
+
+The solver writes the file during the solve, so this costs no extra solve; it
+does cost one file per iteration per weight. It needs a DC solver whose driver
+can write a problem file (Gurobi and the other simplex/barrier drivers can;
+Knitro cannot, and LP output is refused with a note rather than silently
+skipped). Rows and columns carry solver-generated names — AMPL's own entity
+names are not exposed through the driver — so the LP is for inspecting the
+model's shape and size, and the flags above are what name components.
 
 ### The configuration file
 
@@ -138,7 +172,7 @@ Section 3.4 is a transfer, not a re-separation.
 
 ## The ladder study
 
-Section 5 runs the whole grid: six rungs × three functionals × three stages,
+Section 5 runs the whole grid: six instances × three functionals × three stages,
 and the Section 4 counterfactual campaign against every dispatch each of those
 produces.
 
@@ -149,7 +183,7 @@ ropf ladder configs/ladder.conf --all       # keep going until none left
 ropf ladder configs/ladder.conf --status    # the progress table
 ```
 
-The unit of work is one **combo** — one (rung, metric, stage) triple. One
+The unit of work is one **combo** — one (instance, metric, stage) triple. One
 invocation claims one combo, runs its frontier and its campaign, writes
 `campaign.json`/`campaign.csv` beside the three frontier artifacts, and marks
 the directory `DONE`. Because the combos are independent, that gives both
@@ -174,7 +208,7 @@ would make the dispatches incomparable:
 
 ### What the campaign needs that the cases do not carry
 
-The frequency screen of Section 4.2 needs each rung's PSS/E `.dyr` (and `.aux`
+The frequency screen of Section 4.2 needs each instance's PSS/E `.dyr` (and `.aux`
 for AGC participation). These ship inside the same archives as the cases, so
 unpacking as above puts them beside the cases and `dynamics_search = data` is
 correct.
@@ -188,21 +222,64 @@ equation needs the *system* base; the two differ by the load-to-baseMVA ratio
 (671 on ACTIVSg2000) and getting it wrong fails quietly, with the nadir simply
 coming out at the wrong depth.
 
-`beta`, the emergency rating factor of eq (6e), is **an assumption and not
-data**: `rateB` and `rateC` are zero across every ACTIVSg case, so no case
-states one. It defaults to 1.2, a 20% short-term overload, because leaving it
-at 1 makes (D) redispatch a post-event system against *normal* ratings and so
-overstates lost load by forbidding exactly the overload an emergency rating
-exists to permit. Like the four screen constants it is marked `CITE` in
-[configs/ladder.conf](configs/ladder.conf) and wants a source before
-publication. `postevent.mod` keeps its own default at 1, so a caller that never
-sets it is not silently handed an overload.
+`beta`, the emergency rating factor of eq (6e), **defaults to 1, which is the
+case authors' own rule.** The per-branch emergency *magnitude* really is
+missing -- `rateB` and `rateC` are zero across every ACTIVSg `.m`, `.aux` and
+`.RAW` -- but the monitoring *rule* is present: all six `.aux` files carry the
+same `LimitSet` record, rate set "A" for the base case and "A" again for the
+contingency case at `LSLinePercent 100` (`data/ACTIVSg2000.aux:1281`). So the
+cited default is 1 and the burden of declaration falls on 1.2, the 20%
+short-term overload, which stays in the sweep as a labelled assumption. See
+`COUNTERFACTUAL_STANDARD.md` sections 3.5 and 5.3.
+
+Sweeping it costs nothing. `campaign.csv` carries `worst_loading`,
+`max |Pf| / rateA` over rated surviving branches, which does not mention `beta`,
+so one run is read at every rating factor. Nothing forbids the overload any
+more either: the post-event rating is soft, carrying GO3's slack `s_jtk^+`, so
+a draw whose flows exceed `beta * rateA` reports `overload_max_pu` and
+`overload_sum_pu` instead of coming back infeasible.
+
+## Scoring a frontier that already exists
+
+`ropf ladder` can only score a dispatch it just computed, so it scores whatever
+`weight_grid` its config names. `ropf score` runs the same Section 4 campaign
+against dispatches that are already on disk.
+
+```bash
+ropf score configs/frontier_campaign.conf --dry-run  # what would be scored, at what overhead
+ropf score configs/frontier_campaign.conf --all      # keep going until none left
+ropf score configs/frontier_campaign.conf --status   # the progress table
+```
+
+**Algorithm 1 does not run.** That is the command, not an optimisation of it: a
+second sweep would produce a second set of dispatches, and the point is to
+score *these*. The tree named by `frontier_dir` is read-only — `dispatch_gen
+.csv`, `efficient_frontier.csv` and `solution_summary.json` are read out of it
+and nothing is written back — and the campaign goes to `outdir` under the
+ladder's own combo names, so one reader reads both kinds of tree.
+`source.json` beside each campaign records which frontier directory it came
+from and, per weight, that sweep's termination, cost and overhead.
+
+**Why it exists: on cost overhead, a multiplier grid bunches.** A multiplier is
+an exchange rate, not an operating point. Measured on
+`results/vendor_gamma0_soft/`, five of the six ACTIVSg200 `max_active_flow`
+multipliers buy the identical 9.04% overhead and the whole ACTIVSg2000 sweep
+spans about one point, so a security claim indexed by multiplier is made at
+operating points nobody would run at. The `frontier_v1` sweeps, whose grids
+were bisected per combo around λ\*, land at 1.57, 1.63, 1.70, 1.99, 2.00% and
+on out to 26. `campaign.csv` now carries `cost_overhead` on every row for
+exactly this reason, and `analysis/vendor_report.py` leads with it.
+
+A score config sets no Algorithm 1 parameter — `weight_grid`, `kappa`, `eta`,
+`k_bar` and `solver_ac` are not keys of one, and naming any of them is an
+unknown-key error rather than a value that would go unread. The weights scored
+are the ones each source sweep left behind, at the λ\* it measured.
 
 ### Threads
 
 Set `threads` to the **physical** core count, not the logical one. On a
 2-socket box with 16 physical cores and 32 logical CPUs, letting Gurobi take
-its default cost 5.7× on a single model (D) evaluation at the 70k rung — 64.7s
+its default cost 5.7× on a single model (D) evaluation at the 70k instance — 64.7s
 against 11.4s — for an answer agreeing to nine significant figures.
 
 ## Layout
@@ -210,14 +287,17 @@ against 11.4s — for an answer agreeing to nine significant figures.
 ```
 src/ropf/
   network.py        MATPOWER case files to the network model
-  risk.py           the functionals of Section 2.3 and their separation
-  model.py          the AMPL boundary: (M), (M^ac), (D)
+  risk.py           the functionals of Section 2.3, their separation, and the
+                    exposure and overload flags
+  model.py          the AMPL boundary: (M), (M^ac), (D), and LP output
   algorithm.py      Algorithm 1 and the Section 3.4 AC stage
   config.py         the configuration file and its key table
-  results.py        the three artifacts
+  results.py        the run artifacts
   log.py            the run transcript
   counterfactual/   Section 4: disfigurements, the frequency screen, (D)
-  study/ladder.py   the ladder study driver: combos, claims, the campaign
+  study/frontier.py the adaptive frontier tracer behind `ropf trace`
+  study/ladder.py   both study drivers: combos, claims, the campaign, and the
+                    path that scores a frontier it did not compute
 modfiles/           master.mod, master_ac.mod, postevent.mod
 ```
 

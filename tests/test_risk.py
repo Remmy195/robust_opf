@@ -158,6 +158,71 @@ def test_a_degree_two_bus_carries_twice_its_flow(net, dispatch):
 
 
 ###############################################################################
+# The domain of eq (10a)
+###############################################################################
+
+
+def test_rated_domain_is_a_no_op_where_every_branch_is_rated(net, dispatch):
+    """ACTIVSg200 rates all 245 of its branches, so the restriction removes
+    nothing and must not perturb the value or the component set."""
+    Pf, _ = dispatch
+    assert net.unconstrained_branches() == []
+    everything = risk.evaluate("max_active_flow", net, Pf, "all")
+    rated = risk.evaluate("max_active_flow", net, Pf, "rated")
+    assert rated.value == pytest.approx(everything.value)
+    assert rated.components == everything.components
+
+
+def test_rated_domain_drops_the_unrated_attaining_branches(net, dispatch):
+    """With every attaining branch marked unrated, the maximum falls to the
+    largest of the rest and those branches leave the component set entirely.
+
+    They have to leave the components, not merely lose the argmax: the
+    separation selects the cuts it appends from exactly this dictionary.
+
+    The whole attaining set is marked because this dispatch ties at the
+    maximum, and dropping one of several branches that all attain it would
+    leave the value where it was and prove nothing.
+    """
+    Pf, _ = dispatch
+    everything = risk.evaluate("max_active_flow", net, Pf, "all")
+    attaining = [c for c, v in everything.components.items()
+                 if v == pytest.approx(everything.value)]
+    runner_up = max(v for c, v in everything.components.items()
+                    if c not in attaining)
+
+    kept = {c: net.branches[c].constrainedflow for c in attaining}
+    for c in attaining:
+        net.branches[c].constrainedflow = 0
+    try:
+        rated = risk.evaluate("max_active_flow", net, Pf, "rated")
+    finally:
+        for c, value in kept.items():
+            net.branches[c].constrainedflow = value
+
+    assert not set(attaining) & set(rated.components)
+    assert len(rated.components) == len(everything.components) - len(attaining)
+    assert rated.value == pytest.approx(runner_up)
+    assert rated.value < everything.value
+
+
+def test_unknown_flow_domain_is_an_error(net, dispatch):
+    Pf, _ = dispatch
+    with pytest.raises(ValueError) as exc:
+        risk.evaluate("max_active_flow", net, Pf, "rateA")
+    assert "unknown flow domain" in str(exc.value)
+
+
+@pytest.mark.parametrize("metric", ["joule_loss_max", "bus_flow_sum_agg"])
+def test_a_restricted_domain_refuses_the_other_functionals(net, dispatch, metric):
+    """Silently ignoring it would report the unrestricted quantity under a name
+    saying the domain was restricted."""
+    Pf, _ = dispatch
+    with pytest.raises(ValueError) as exc:
+        risk.evaluate(metric, net, Pf, "rated")
+    assert "max_active_flow" in str(exc.value)
+
+###############################################################################
 # Cuts, eq (6c)
 ###############################################################################
 
@@ -261,7 +326,7 @@ def test_negative_series_resistance_contributes_no_heat():
     """eq (4c) is a dissipation; a branch does not cool when it is loaded.
 
     A negative series resistance is a fitting artefact of a three-winding
-    transformer equivalent, and every rung from ACTIVSg10k up carries one --
+    transformer equivalent, and every instance from ACTIVSg10k up carries one --
     178 branches on 10k, 447 on 25k, 1,216 on 70k.  Left raw, `Phi >= r P^2`
     with r < 0 is a CONCAVE constraint and the master stops being convex.
     """

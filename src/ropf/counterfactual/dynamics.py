@@ -8,21 +8,15 @@ the ACTIVSg cases and are not in the MATPOWER ``.m`` file at all:
     pi_g  AGC participation factor (``.aux``, field ``GenParFac``)
 
 EVERY RECORD IS CHECKED AGAINST ITS DECLARED LAYOUT BEFORE IT IS INDEXED.  A
-PSS/E ``.dyr`` record is positional -- ``H`` is the 5th parameter of a GENROU
-and the 4th of a GENSAL, and IEEEG1 states a gain K whose reciprocal is the
-droop -- so reading the wrong position yields a plausible number rather than an
-error.  `parse_dyr` therefore requires each record to carry exactly the number
-of parameters its model declares, and REJECTS the record otherwise, counting the
-rejections in the report.  A layout that has moved then shows up as a count, not
-as a screen that quietly passes everything.
+PSS/E ``.dyr`` record is positional -- ``H`` is the 5th GENROU parameter and the
+4th of a GENSAL -- so the wrong position yields a plausible number, not an
+error.  `parse_dyr` requires each record to carry exactly the parameter count
+its model declares and REJECTS it otherwise, counting the rejections, so a moved
+layout shows up as a count rather than a screen that passes everything.
 
-THE DISTRIBUTIONS ARE NOT UNIFORM, and the exceptions are not guessable:
-
-    * five rungs name the file ``ACTIVSg<n>_dynamics.dyr``; ACTIVSg25k names
-      it ``ACTIVSg25k.dyr``, with no ``_dynamics``
-    * five rungs ship as a ``.zip``; ACTIVSg70k ships unpacked, as a directory
-
-`locate` knows both, so a caller never has to.
+THE DISTRIBUTIONS ARE NOT UNIFORM and the exceptions are not guessable:
+ACTIVSg25k names its file ``ACTIVSg25k.dyr`` with no ``_dynamics``, and
+ACTIVSg70k ships unpacked rather than as a ``.zip``.  `locate` knows both.
 """
 
 from __future__ import annotations
@@ -56,7 +50,7 @@ GOVERNOR_MODELS: Dict[str, Tuple[int, Dict[str, int]]] = {
     "HYGOV": (12, {"R": 0, "T": 8}),
     # R T1 VMAX VMIN T2 T3 Dt.  T3 is the reheat lag and is the one that shapes
     # the ramp (6.3 to 9 s on ACTIVSg200, against T1 of 0.3 to 0.5 s).
-    # Without this entry the two smallest rungs integrate with NO primary
+    # Without this entry the two smallest instances integrate with NO primary
     # response at all -- 49 of 49 units on ACTIVSg200 are governed by TGOV1 and
     # nothing else -- and every nadir there comes out far too deep.
     "TGOV1": (7, {"R": 0, "T": 5}),
@@ -71,7 +65,15 @@ GOVERNOR_MODELS: Dict[str, Tuple[int, Dict[str, int]]] = {
 INVERTER_MODELS = frozenset({"REGCA1", "REECA1", "REPCA1", "REGCAU1", "WT3G1",
                              "WT4G1", "PVGU1", "PVEU1"})
 
-_TOKEN = re.compile(r"'[^']*'|\S+")
+#: One field of a ``.dyr`` record or an ``.aux`` row.  BOTH quote styles are
+#: recognized: PSS/E quotes with ``'``, PowerWorld with ``"``.  Handling only
+#: the single quote splits a PowerWorld field that contains a space -- the
+#: ``GenAGCAble`` value is written ``"NO "`` with a trailing space inside the
+#: quotes -- into two tokens, which shifts every later field on that row by one
+#: and made the row fail to parse.  That silently dropped every non-AGC unit:
+#: 39 of 90 on ACTIVSg500, 128 of 544 on ACTIVSg2000, 1349 of 2485 on
+#: ACTIVSg10k.
+_TOKEN = re.compile(r"'[^']*'|\"[^\"]*\"|\S+")
 
 
 def _noop(_message: str) -> None:
@@ -145,7 +147,7 @@ class DynamicsReport:
 
 @dataclass(frozen=True)
 class DynamicsFiles:
-    """Where a rung's dynamics data actually is."""
+    """Where a instance's dynamics data actually is."""
 
     dyr: Optional[str] = None
     aux: Optional[str] = None
@@ -153,23 +155,23 @@ class DynamicsFiles:
     archive: Optional[str] = None
 
 
-def locate(rung: str, search: Sequence[str]) -> DynamicsFiles:
-    """Find the ``.dyr`` and ``.aux`` for a rung, across both distribution shapes.
+def locate(instance: str, search: Sequence[str]) -> DynamicsFiles:
+    """Find the ``.dyr`` and ``.aux`` for a instance, across both distribution shapes.
 
-    `rung` is the distribution name, e.g. ``ACTIVSg25k``.  Both irregularities
+    `instance` is the distribution name, e.g. ``ACTIVSg25k``.  Both irregularities
     are handled here so no caller has to know them: ACTIVSg25k drops the
     ``_dynamics`` from its ``.dyr`` name, and ACTIVSg70k ships as a directory
     rather than a zip.
     """
-    dyr_names = (f"{rung}_dynamics.dyr", f"{rung}.dyr")
-    aux_names = (f"{rung}.aux", f"{rung}_dynamics.aux")
+    dyr_names = (f"{instance}_dynamics.dyr", f"{instance}.dyr")
+    aux_names = (f"{instance}.aux", f"{instance}_dynamics.aux")
 
     for root in search:
         if not os.path.isdir(root):
             continue
         # Unpacked, either loose in the directory or in a subdirectory named
-        # for the rung -- the ACTIVSg70k shape.
-        for directory in (root, os.path.join(root, rung),
+        # for the instance -- the ACTIVSg70k shape.
+        for directory in (root, os.path.join(root, instance),
                           os.path.join(root, "extracted")):
             if not os.path.isdir(directory):
                 continue
@@ -178,7 +180,7 @@ def locate(rung: str, search: Sequence[str]) -> DynamicsFiles:
             if dyr or aux:
                 return DynamicsFiles(dyr=dyr, aux=aux)
 
-        archive = os.path.join(root, f"{rung}.zip")
+        archive = os.path.join(root, f"{instance}.zip")
         if os.path.isfile(archive):
             with zipfile.ZipFile(archive) as handle:
                 held = {os.path.basename(n): n for n in handle.namelist()}
@@ -294,17 +296,43 @@ def parse_dyr(path: str,
 ###############################################################################
 
 _GENPARFAC = re.compile(r"GenParFac", re.IGNORECASE)
+_GENAGCABLE = re.compile(r"GenAGCAble", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class UnitParticipation:
+    """One unit's AGC data, as the ``.aux`` states it.
+
+    ``factor`` and ``agc_able`` are kept apart rather than folded into a single
+    number because the distribution states them apart and they disagree.  On
+    ACTIVSg2000, 128 of 544 units are ``GenAGCAble = NO`` and still carry a
+    nonzero ``GenParFac``; on ACTIVSg10k it is 1349 of 2485.  A unit that is not
+    AGC-able does not respond, whatever factor sits beside it, so folding the
+    flag in at parse time would hide the disagreement instead of recording it.
+    """
+
+    factor: float
+    agc_able: bool
+
+    @property
+    def effective(self) -> float:
+        """The factor that actually applies.  Zero for a unit not on AGC."""
+        return self.factor if self.agc_able else 0.0
 
 
 def parse_participation(path: str,
                         archive: Optional[str] = None,
                         log: Optional[Callable[[str], None]] = None
-                        ) -> Dict[Tuple[int, str], float]:
-    """pi_g from the PowerWorld ``.aux`` ``GenParFac`` field.
+                        ) -> Dict[Tuple[int, str], UnitParticipation]:
+    """pi_g from the PowerWorld ``.aux`` ``GenParFac`` and ``GenAGCAble`` fields.
 
-    Returns ``{(bus, unit id): factor}``, unnormalized -- PowerWorld states
-    participation on an arbitrary scale, and the screen normalizes over whatever
-    fleet survives, which is not the fleet the file was written for.
+    Returns ``{(bus, unit id): UnitParticipation}``, unnormalized -- PowerWorld
+    states participation on an arbitrary scale, and the caller normalizes over
+    whatever fleet survives, which is not the fleet the file was written for.
+
+    ``GenAGCAble`` is read here and applied by `participation_factors`.  A file
+    with no such column is treated as all-AGC-able, which is what the field's
+    absence meant before it existed, and the log says so.
 
     Returns empty rather than raising when the file has no ``GenParFac`` column:
     a case without AGC data is a case the capacity surrogate covers, not an
@@ -312,7 +340,8 @@ def parse_participation(path: str,
     """
     emit = log or _noop
     text = _read(path, archive)
-    factors: Dict[Tuple[int, str], float] = {}
+    units: Dict[Tuple[int, str], UnitParticipation] = {}
+    saw_flag = False
 
     for header, body in _aux_blocks(text, "Gen"):
         fields = [f.strip().strip('"') for f in header]
@@ -321,11 +350,15 @@ def parse_participation(path: str,
         bus_at = _index_of(fields, "BusNum")
         id_at = _index_of(fields, "GenID", "ID")
         fac_at = next(i for i, f in enumerate(fields) if _GENPARFAC.fullmatch(f))
+        agc_at = next((i for i, f in enumerate(fields)
+                       if _GENAGCABLE.fullmatch(f)), None)
         if bus_at is None or id_at is None:
             continue
+        saw_flag = saw_flag or agc_at is not None
+        needed = max(bus_at, id_at, fac_at, agc_at if agc_at is not None else 0)
         for row in body:
             tokens = _TOKEN.findall(row)
-            if len(tokens) <= max(bus_at, id_at, fac_at):
+            if len(tokens) <= needed:
                 continue
             try:
                 bus = int(tokens[bus_at].strip('"').strip("'"))
@@ -333,10 +366,22 @@ def parse_participation(path: str,
             except ValueError:
                 continue
             uid = tokens[id_at].strip('"').strip("'").strip()
-            factors[(bus, uid)] = value
+            able = True
+            if agc_at is not None:
+                able = tokens[agc_at].strip('"').strip("'").strip().upper() == "YES"
+            units[(bus, uid)] = UnitParticipation(factor=value, agc_able=able)
 
-    emit(f" participation: {len(factors)} units carry a GenParFac\n")
-    return factors
+    off = sum(1 for u in units.values() if not u.agc_able)
+    contradicting = sum(1 for u in units.values()
+                        if not u.agc_able and u.factor > 0)
+    if not saw_flag:
+        emit(f" participation: {len(units)} units carry a GenParFac; no "
+             f"GenAGCAble column, so every unit is taken as AGC-able\n")
+    else:
+        emit(f" participation: {len(units)} units carry a GenParFac, "
+             f"{off} are GenAGCAble = NO ({contradicting} of those carry a "
+             f"nonzero factor and are held at zero)\n")
+    return units
 
 
 def _index_of(fields: Sequence[str], *names: str) -> Optional[int]:
@@ -378,19 +423,28 @@ def _aux_blocks(text: str, object_name: str) -> Iterable[Tuple[List[str], List[s
 
 
 def participation_factors(network: Network,
-                          aux: Optional[Dict[Tuple[int, str], float]] = None,
+                          aux: Optional[Dict[Tuple[int, str], UnitParticipation]] = None,
                           log: Optional[Callable[[str], None]] = None
                           ) -> Tuple[Dict[int, float], str]:
-    """pi_g by generator count, normalized over the in-service fleet.
+    """pi_g by generator count, normalized over the in-service AGC-able fleet.
 
     Returns ``(factors, source)``, where source names which it is -- the AGC
     factors from the ``.aux``, or the capacity surrogate.  The study reports
     the source, because a participation factor invented by the code and one
     read from the distribution are not the same evidence.
 
-    The ``.aux`` is keyed by (bus ID, unit ID) and the network by count, and the
-    MATPOWER file carries no unit ID; a bus with several units therefore takes
-    the bus's total factor, split by capacity among its units.
+    UNIT IDS ARE RESOLVED BY POSITION.  The ``.aux`` is keyed by (bus ID, unit
+    ID) and the network by count, and MATPOWER carries no unit ID.  Where a bus
+    holds the same number of units in both, they are paired in order -- network
+    counts in file order against ``.aux`` identifiers sorted -- which makes the
+    join exact and lets ``GenAGCAble`` be applied per unit.  This holds on all
+    six ACTIVSg instances.  Where the counts disagree the bus falls back to the
+    older behaviour, its AGC-able total split by capacity across its in-service
+    units, and the fallback is counted in the log rather than passed over.
+
+    A unit that is not AGC-able gets zero.  It does not respond, so a nonzero
+    factor beside it is a contradiction in the file and not a licence to move
+    it: on ACTIVSg10k that is 1349 of 2485 units.
     """
     from .postevent import capacity_participation
 
@@ -400,35 +454,82 @@ def participation_factors(network: Network,
              "surrogate\n")
         return capacity_participation(network), "capacity_surrogate"
 
-    by_bus: Dict[int, float] = {}
-    for (bus_id, _uid), value in aux.items():
-        by_bus[bus_id] = by_bus.get(bus_id, 0.0) + float(value)
+    # Per bus: the network's unit counts in file order, and the .aux's
+    # identifiers sorted.  Sorted on both sides or the pairing is not
+    # reproducible across Python builds.
+    #
+    # ALL units, in service or not.  The .aux lists the out-of-service ones too,
+    # so filtering them out here would make the two lists disagree in length at
+    # every bus that has one and push it onto the capacity fallback for no
+    # reason -- 183 of 1455 buses on ACTIVSg10k before this was fixed.  They are
+    # paired, then zeroed below.
+    net_at: Dict[int, List[int]] = {}
+    for count in sorted(network.gens):
+        net_at.setdefault(int(network.gens[count].nodeID), []).append(count)
+    aux_at: Dict[int, List[str]] = {}
+    for bus_id, uid in aux:
+        aux_at.setdefault(int(bus_id), []).append(uid)
+    for bus_id in aux_at:
+        aux_at[bus_id].sort()
 
-    raw: Dict[int, float] = {}
+    raw: Dict[int, float] = {count: 0.0 for count in network.gens}
     matched = 0
-    for count, gen in network.gens.items():
-        if not gen.status:
-            raw[count] = 0.0
+    exact_buses = 0
+    fallback_buses = 0
+    zeroed = 0
+
+    for bus_id, counts in net_at.items():
+        uids = aux_at.get(bus_id)
+        if not uids:
             continue
-        share = by_bus.get(gen.nodeID)
-        if share is None:
-            raw[count] = 0.0
+
+        if len(uids) == len(counts):
+            exact_buses += 1
+            for count, uid in zip(counts, uids):
+                if not network.gens[count].status:
+                    continue                    # out of service: stays at zero
+                unit = aux[(bus_id, uid)]
+                raw[count] = unit.effective
+                matched += 1
+                if not unit.agc_able and unit.factor > 0:
+                    zeroed += 1
             continue
-        matched += 1
-        siblings = [c for c in network.buses[network.id_to_count[gen.nodeID]]
-                    .genidsbycount if network.gens[c].status]
-        capacity = sum(network.gens[c].Pmax for c in siblings) or 1.0
-        raw[count] = share * (gen.Pmax / capacity)
+
+        # The bus-level fallback.  Only AGC-able factors enter the total, so a
+        # bus with no AGC-able unit contributes nothing instead of spreading a
+        # factor over units the file says will not move.
+        fallback_buses += 1
+        live = [c for c in counts if network.gens[c].status]
+        if not live:
+            continue
+        share = sum(aux[(bus_id, uid)].effective for uid in uids)
+        capacity = sum(network.gens[c].Pmax for c in live) or 1.0
+        for count in live:
+            raw[count] = share * (network.gens[count].Pmax / capacity)
+            matched += 1
 
     total = sum(raw.values())
-    if matched == 0 or total <= 0:
+    if matched == 0:
         emit(" participation: the .aux matched no in-service unit; using the "
              "capacity surrogate\n")
         return capacity_participation(network), "capacity_surrogate"
+    if total <= 0:
+        # Every matched unit is off AGC, or every factor is zero.  Falling back
+        # to the capacity surrogate here would make the whole fleet responsive
+        # on the strength of a file that says none of it is, which is the one
+        # substitution this function must never make.
+        raise ValueError(
+            f"the .aux matched {matched} in-service units but every effective "
+            f"participation factor is zero, so no unit would respond to any "
+            f"event. Check GenAGCAble and GenParFac in the case's .aux; this "
+            f"is a data problem and the capacity surrogate must not be "
+            f"substituted for it.")
 
-    emit(f" participation: matched {matched}/{network.numgens} units to a "
-         f"GenParFac\n")
-    return {count: value / total for count, value in raw.items()}, "aux_genparfac"
+    emit(f" participation: matched {matched}/{network.numgens} units "
+         f"({exact_buses} buses resolved by unit id, {fallback_buses} by "
+         f"capacity split); {zeroed} units held at zero as not AGC-able\n")
+    return ({count: value / total for count, value in raw.items()},
+            "aux_genparfac_agc")
 
 
 def unit_inertia(network: Network,

@@ -5,10 +5,9 @@ __pycache__/
 .venv/
 venv/
 
-# Case data is fetched, not committed: the six TAMU distributions are ~875 MB.
-# `ropf fetch` downloads into here; the fetcher itself lives in the package, at
-# src/ropf/data/fetch.py.  The one small case under tests/fixtures/ is the
-# exception and is tracked.
+# Case data is not committed: the six TAMU distributions are ~875 MB and are
+# unpacked into here by hand (see data/README.md).  The one small case under
+# tests/fixtures/ is the exception and is tracked.
 /data/*
 !/data/README.md
 

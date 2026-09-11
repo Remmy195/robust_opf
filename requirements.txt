@@ -12,3 +12,7 @@
 
 amplpy>=0.15
 numpy>=1.24
+# scipy carries the sparse DC solve of ropf.counterfactual.frozen, which is (D)
+# in closed form at gamma = 0.  A dense factorization of an 88,207-branch B is
+# not an option at the top of the ladder.
+scipy>=1.10

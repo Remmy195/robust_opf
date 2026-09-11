@@ -1,40 +1,12 @@
-"""The risk functionals of Section 2.3, and the separation of Section 2.4.
+"""The risk functionals of Section 2.3 and the separation of Section 2.4.
 
-Three functionals, and nothing else.  Equations (4a) to (4c):
+    phi^bus   = max_i  sum_{(m,n) in E_i} |P_mn|      eq (4a)
+    phi^flow  = max_e  |P_e|                          eq (4b)
+    phi^joule = max_e  r_e P_e^2                      eq (4c)
 
-    phi^bus  = max_i  sum_{(m,n) in E_i} |P_mn|
-    phi^flow = max_e  |P_e|
-    phi^joule= max_e  r_e P_e^2
-
-Everything in this module is a pure function of plain dictionaries.  Nothing
-here touches AMPL, logs, or mutates state, which is what lets the same code
-evaluate the incumbent inside the loop, score a dispatch in the counterfactual,
-and be exercised in tests without a solver.
-
-``f_i`` IS THE INCIDENT LINE FLOWS AND NOTHING ELSE.  It carries no generation
-term and no demand term, and both omissions are deliberate.
-
-GENERATION IS ALREADY IN THE FLOWS.  Kirchhoff at bus i says the injection
-there leaves through the incident lines: what a unit produces is precisely what
-shows up in ``sum |P_mn|``.  Adding ``sum_g |P_g|`` counts the same power a
-second time, and weights a generator bus against a transit bus by an accident
-of where the metering happens rather than by how much power moves.
-
-DEMAND IS FIXED DATA.  ``P_di`` is a constant of the case, identical at every
-dispatch and at every lambda, so it cannot be traded against anything.  Carried
-in ``f_i`` it does not change what any dispatch can do; it only adds a fixed
-per-bus offset that reorders the argmax, so the functional would report the
-most heavily *loaded* bus rather than the busiest one, and the cut at that bus
-would carry a constant the master can never move.
-
-``f_i`` sums *absolute values*, so the flows do not cancel.  A degree-2 bus
-carrying P through it scores 2|P|, and that is correct rather than a symptom:
-the power crosses two lines.
-
-THE SIGNS ENTER ONLY IN THE CUT, frozen at the incumbent.  That is what makes
-eq (6c) a subgradient inequality of ``f_i``, hence a minorant of phi^bus, hence
-eq (11).  A cut built from anything other than the incumbent's sign pattern is
-not valid.
+f_i is the incident line flows alone: no generation term (Kirchhoff already
+puts the injection on those lines) and no demand term (P_di is case data).
+Pure functions of plain dicts; nothing here touches AMPL or mutates state.
 """
 
 from __future__ import annotations
@@ -45,20 +17,22 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from .model import BusCut
 from .network import Network
 
-#: The three functionals of Section 2.3.  A metric outside this set is an error
-#: rather than a silent fallback: the earlier codebase defaulted an unknown
-#: metric to the flow family, which turned a typo in a config into a study that
-#: quietly measured the wrong thing.
 METRICS = ("max_active_flow", "joule_loss_max", "bus_flow_sum_agg")
 
-#: Below this magnitude a quantity contributes no term to a cut.  It is the
-#: subgradient of |.| at zero, where any sign in [-1, 1] is valid; taking zero
-#: keeps the cut the tightest valid one.
+#: Component sets eq (10a) may be maximized over.  "rated" drops branches with
+#: no rateA, which on the large ACTIVSg systems are zero-length bus ties.
+FLOW_DOMAINS = ("all", "rated")
+
+#: Below this magnitude a flow contributes no term to a cut.  Zero is a valid
+#: subgradient of |.| there and keeps the cut tightest.
 SIGN_TOL = 1e-12
+
+#: A component is flagged "bad" when its contribution reaches this fraction of
+#: the maximum.  See `exposed`.
+EXPOSURE_FRACTION = 0.95
 
 
 def _sign(value: float, tol: float = SIGN_TOL) -> int:
-    """sigma in eq (6c): the sign the quantity carries at the incumbent."""
     if value > tol:
         return 1
     if value < -tol:
@@ -68,19 +42,17 @@ def _sign(value: float, tol: float = SIGN_TOL) -> int:
 
 @dataclass
 class RiskEval:
-    """The active functional evaluated at one dispatch.
+    """The active functional at one dispatch.  `value` is rho^k.
 
-    `value` is rho^k of Algorithm 1.  `components` maps each component to its
-    contribution, so the separation is an argmax over it: branch counts for the
-    two line functionals, bus counts for the bus functional.
+    `components` maps each component to its contribution -- branch counts for
+    the line functionals, bus counts for the bus functional -- so separation is
+    an argmax over it.
     """
 
     metric: str
     value: float
     components: Dict[int, float] = field(default_factory=dict)
-
-    # Populated for the bus functional only.  `incidence` is keyed by bus
-    # count, `branch_sign` by branch count.
+    #: Bus functional only.  `incidence` by bus count, `branch_sign` by branch.
     incidence: Dict[int, List[int]] = field(default_factory=dict)
     branch_sign: Dict[int, int] = field(default_factory=dict)
 
@@ -95,72 +67,59 @@ class RiskEval:
         return max(self.components, key=self.components.get)
 
     def ranked(self) -> List[Tuple[int, float]]:
-        """Components by descending contribution."""
         return sorted(self.components.items(), key=lambda kv: kv[1], reverse=True)
 
-
-###############################################################################
-# Evaluation
-###############################################################################
+    def exposed(self, fraction: float = EXPOSURE_FRACTION) -> List[int]:
+        return exposed(self, fraction)
 
 
 def evaluate(metric: str,
              network: Network,
-             Pf: Dict[int, float]) -> RiskEval:
-    """Evaluate the active functional at a dispatch.
-
-    This is Algorithm 1 line 2 at k = 0 and line 8 thereafter.  `Pf` is keyed by
-    branch count, matching `ropf.network`.
-
-    All three functionals are functions of the FLOWS alone.  The bus functional
-    took a `Pg` as well while ``f_i`` carried a generation term; it no longer
-    does, and the argument is gone rather than ignored, so that a caller cannot
-    read the signature as saying the dispatch's generation still matters here.
-    """
+             Pf: Dict[int, float],
+             flow_domain: str = "all") -> RiskEval:
+    """Algorithm 1 line 2 at k = 0, line 8 thereafter.  `Pf` is by branch count."""
     if metric not in METRICS:
         raise ValueError(f"unknown risk functional {metric!r}; "
                          f"expected one of {list(METRICS)}")
+    if flow_domain not in FLOW_DOMAINS:
+        raise ValueError(f"unknown flow domain {flow_domain!r}; "
+                         f"expected one of {list(FLOW_DOMAINS)}")
+    if flow_domain != "all" and metric != "max_active_flow":
+        raise ValueError(f"flow_domain = {flow_domain!r} applies to "
+                         f"max_active_flow; {metric!r} ranges over a different "
+                         f"component set and would ignore it")
 
     if metric == "max_active_flow":
-        return _evaluate_flow(network, Pf)
+        return _evaluate_flow(network, Pf, flow_domain)
     if metric == "joule_loss_max":
         return _evaluate_joule(network, Pf)
     return _evaluate_bus(network, Pf)
 
 
-def _evaluate_flow(network: Network, Pf: Dict[int, float]) -> RiskEval:
-    """eq (4b): the loading of the most heavily used line."""
+def _evaluate_flow(network: Network, Pf: Dict[int, float],
+                   flow_domain: str = "all") -> RiskEval:
+    """eq (4b), maximized over `flow_domain`."""
     components = {count: abs(float(Pf.get(count, 0.0)))
-                  for count in network.branches}
-    value = max(components.values(), default=0.0)
-    return RiskEval("max_active_flow", value, components)
+                  for count, branch in network.branches.items()
+                  if flow_domain == "all" or branch.constrainedflow}
+    return RiskEval("max_active_flow", max(components.values(), default=0.0),
+                    components)
 
 
 def _evaluate_joule(network: Network, Pf: Dict[int, float]) -> RiskEval:
-    """eq (4c): the ohmic heating of the worst line.
-
-    This is the I^2 R term of the conductor heat balance, so it is the DC active
-    flow that enters, not apparent power -- and `Branch.r_heat`, the nonnegative
-    heat coefficient, not the raw series resistance, which the large synthetic
-    cases give as negative on some transformer equivalents.  The master's cut
-    family (6b) uses the same coefficient, and it has to: a surrogate built on
-    one coefficient and a functional measured with another would break eq (11).
-    """
+    """eq (4c).  Uses `Branch.r_heat`, as cut family (6b) does; a surrogate and
+    a functional built on different coefficients would break eq (11)."""
     components = {}
     for count, branch in network.branches.items():
         flow = float(Pf.get(count, 0.0))
         components[count] = branch.r_heat * flow * flow
-    value = max(components.values(), default=0.0)
-    return RiskEval("joule_loss_max", value, components)
+    return RiskEval("joule_loss_max", max(components.values(), default=0.0),
+                    components)
 
 
 def _evaluate_bus(network: Network, Pf: Dict[int, float]) -> RiskEval:
-    """eq (4a): the power crossing the busiest bus.
-
-    Every incident line contributes the flow at *its own from-end*, which is why
-    both endpoints of a branch accumulate ``|Pf|`` and neither uses ``Pt``.  See
-    the module docstring for why generation and demand are not terms here.
-    """
+    """eq (4a).  Every incident line contributes its own from-end flow, so both
+    endpoints accumulate |Pf| and neither uses Pt."""
     f_bus: Dict[int, float] = {count: 0.0 for count in network.buses}
     incidence: Dict[int, List[int]] = {count: [] for count in network.buses}
     branch_sign: Dict[int, int] = {}
@@ -173,9 +132,49 @@ def _evaluate_bus(network: Network, Pf: Dict[int, float]) -> RiskEval:
             f_bus[endpoint] += magnitude
             incidence[endpoint].append(count)
 
-    value = max(f_bus.values(), default=0.0)
-    return RiskEval("bus_flow_sum_agg", value, f_bus,
+    return RiskEval("bus_flow_sum_agg", max(f_bus.values(), default=0.0), f_bus,
                     incidence=incidence, branch_sign=branch_sign)
+
+
+###############################################################################
+# Exposure
+###############################################################################
+
+
+def exposed(ev: RiskEval, fraction: float = EXPOSURE_FRACTION) -> List[int]:
+    """The components carrying too much exposure: contribution >= fraction*rho.
+
+    Branch counts for the line functionals, bus counts for the bus functional,
+    ranked worst first.  `fraction = 1` is the argmax alone.  Empty when the
+    functional is zero, since nothing is then exposed.
+    """
+    if not 0.0 < fraction <= 1.0:
+        raise ValueError(f"the exposure fraction must lie in (0, 1], got "
+                         f"{fraction}")
+    if ev.value <= 0.0:
+        return []
+    threshold = fraction * ev.value
+    return [component for component, contribution in ev.ranked()
+            if contribution >= threshold]
+
+
+def overloaded(network: Network, Pf: Dict[int, float],
+               fraction: float = 1.0) -> List[int]:
+    """Rated branches loaded at or above `fraction` of their rating, worst first.
+
+    Independent of the run's functional: a line is overloaded against its own
+    rateA whether or not the active functional ranges over it.  Unrated
+    branches carry the big-M substitution of `ropf.network` and are skipped.
+    """
+    loaded = []
+    for count, branch in network.branches.items():
+        if not branch.constrainedflow or branch.limit <= 0.0:
+            continue
+        loading = abs(float(Pf.get(count, 0.0))) / branch.limit
+        if loading >= fraction:
+            loaded.append((count, loading))
+    loaded.sort(key=lambda kv: kv[1], reverse=True)
+    return [count for count, _ in loaded]
 
 
 ###############################################################################
@@ -184,40 +183,24 @@ def _evaluate_bus(network: Network, Pf: Dict[int, float]) -> RiskEval:
 
 
 def bus_cut_key(ev: RiskEval, bus: int) -> Tuple:
-    """Exclusion key for the bus family: the bus AND its sign pattern.
-
-    Section 3 excludes components that already carry a cut, and for the bus
-    family does it "by bus and sign pattern together, since a repeated bus under
-    a new sign pattern gives a new hyperplane".  Keying on the bus alone refuses
-    a genuinely new and valid cut; keying on nothing re-adds the identical
-    hyperplane every iteration and the loop stops making progress.
-
-    The key is the cut's own, `BusCut.key`, reached by building the cut this bus
-    would give.  The separation therefore skips a component on exactly the
-    condition under which the master already holds its hyperplane; two
-    independent notions of "the same cut" would eventually disagree.
-    """
+    """Exclusion key for the bus family: the bus AND its sign pattern, since a
+    repeated bus under a new pattern is a new hyperplane.  Reached by building
+    the cut, so the pool and the separation cannot disagree on "the same cut"."""
     return build_bus_cuts(ev, [int(bus)])[0].key
 
 
-def select(ev: RiskEval,
-           kappa: int,
+def select(ev: RiskEval, kappa: int,
            existing: Optional[Iterable] = None) -> List[int]:
     """Algorithm 1 line 5: the kappa components of largest contribution.
 
-    Returns branch counts for the two line functionals and bus counts for the
-    bus functional.  `existing` holds what the pool already carries -- branch
-    counts, or `bus_cut_key` tuples for the bus family -- and is skipped over.
-
-    Selection only; the cuts themselves are built by `build_cuts` and appended
-    by `ropf.model.Master`.
+    `existing` holds what the pool already carries -- branch counts, or
+    `bus_cut_key` tuples for the bus family -- and is skipped.
     """
     if kappa is None or kappa <= 0:
         return []
     seen = set(existing or ())
     chosen: List[int] = []
-
-    for component, contribution in ev.ranked():
+    for component, _ in ev.ranked():
         key = bus_cut_key(ev, component) if ev.is_bus_family else int(component)
         if key in seen:
             continue
@@ -228,12 +211,8 @@ def select(ev: RiskEval,
 
 
 def build_bus_cuts(ev: RiskEval, buses: Sequence[int]) -> List[BusCut]:
-    """Turn selected buses into eq (6c) cuts, one per bus.
-
-    kappa separate cuts, not one dense cut at the argmax.  Each is the
-    subgradient inequality of ``f_i`` at the incumbent, so each is valid on its
-    own and the pool of them is tighter than any single aggregate.
-    """
+    """One eq (6c) cut per bus: kappa separate subgradient inequalities, not one
+    dense cut at the argmax."""
     cuts: List[BusCut] = []
     for bus in buses:
         bus = int(bus)
@@ -244,21 +223,14 @@ def build_bus_cuts(ev: RiskEval, buses: Sequence[int]) -> List[BusCut]:
                 branch_pos.append(int(branch))
             elif sign < 0:
                 branch_neg.append(int(branch))
-
-        cuts.append(BusCut(bus=bus,
-                           branch_pos=tuple(branch_pos),
+        cuts.append(BusCut(bus=bus, branch_pos=tuple(branch_pos),
                            branch_neg=tuple(branch_neg)))
     return cuts
 
 
-def cut_value_at(ev: RiskEval, cut: BusCut,
-                 Pf: Dict[int, float]) -> float:
-    """Evaluate a bus cut's right-hand side at a dispatch.
-
-    At the dispatch the cut was built from this must equal ``f_i`` exactly.
-    That identity is the whole justification for eq (6c), so it is checked in
-    the tests rather than assumed.
-    """
+def cut_value_at(ev: RiskEval, cut: BusCut, Pf: Dict[int, float]) -> float:
+    """A bus cut's right-hand side at a dispatch.  At the dispatch it was built
+    from this equals f_i exactly, which is what makes eq (6c) valid."""
     total = sum(float(Pf.get(b, 0.0)) for b in cut.branch_pos)
     total -= sum(float(Pf.get(b, 0.0)) for b in cut.branch_neg)
     return total

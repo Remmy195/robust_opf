@@ -1,12 +1,9 @@
 """MATPOWER case files to the network quantities every other module reads.
 
-This module is pinned by ``tests/test_matpower_parity.py``, which compares its
-output against MATPOWER 8.1's own ``makeYbus`` and ``makeBdc`` run under Octave
-over the same ``.m`` files.  The admittance and DC formulas below are therefore
-transcribed rather than derived, and should not be rewritten for style: the
-parity is the reason to trust every number the study reports.
-
-One deliberate deviation from MATPOWER is documented at ``Branch.limit``.
+Pinned by ``tests/test_matpower_parity.py`` against MATPOWER 8.1 own
+``makeYbus`` and ``makeBdc`` under Octave.  The admittance and DC formulas are
+transcribed rather than derived and should not be rewritten for style.  One
+deliberate deviation is documented at ``Branch.limit``.
 """
 
 from __future__ import annotations
@@ -25,11 +22,8 @@ UNBOUNDED_ANGLE_RAD = 2 * math.pi
 
 
 class CaseFormatError(ValueError):
-    """The case file is not something this reader will silently accept.
-
-    Raised rather than warned so that a malformed or unsupported case stops the
-    run instead of producing numbers whose provenance cannot be defended.
-    """
+    """A malformed or unsupported case stops the run rather than being warned
+    about, so no number is produced whose provenance cannot be defended."""
 
 
 def _noop(_message: str) -> None:
@@ -81,12 +75,8 @@ class Bus:
 
 
 class Branch:
-    """One in-service row of ``mpc.branch``.
-
-    The eight admittance entries reproduce MATPOWER ``makeYbus``; ``bdc``,
-    ``Pfinj`` and ``Ptinj`` reproduce ``makeBdc``.  Both are covered by the
-    parity test.
-    """
+    """One in-service row of ``mpc.branch``.  The eight admittance entries
+    reproduce ``makeYbus``; ``bdc``/``Pfinj``/``Ptinj`` reproduce ``makeBdc``."""
 
     def __init__(self, count, f, id_f, t, id_t, r, x, bc, rateAmva, rateBmva,
                  rateCmva, ratio, angle, maxangle, minangle, status,
@@ -105,20 +95,21 @@ class Branch:
         self.rateBmva = rateBmva
         self.rateCmva = rateCmva
 
-        # DELIBERATE DEVIATION FROM MATPOWER.  A rateA of zero means "no rating
-        # given".  MATPOWER leaves such a branch unlimited; we substitute a
-        # big-M of 2 * sum(Pd) / baseMVA, because AMPL needs a finite bound on
-        # Pf and an unbounded variable degrades the DC master's conditioning.
-        # The value is non-binding by construction -- twice the total system
-        # load cannot flow on one line -- and `constrainedflow` records which
-        # branches were substituted so the count can be asserted in tests.
-        # This affects 2,462 of 12,706 branches on ACTIVSg10k and 19,590 of
-        # 88,207 on ACTIVSg70k, so it is not a rare corner.
+        # DELIBERATE DEVIATION FROM MATPOWER.  rateA = 0 means "no rating";
+        # MATPOWER leaves the branch unlimited, we substitute a big-M of
+        # 2*sum(Pd)/baseMVA because AMPL needs a finite bound on Pf.  Non-binding
+        # by construction, and `constrainedflow` records the substitution.
+        # 19,590 of 88,207 branches on ACTIVSg70k: not a rare corner.
         self.limit = rateAmva
         self.constrainedflow = 1
         if self.limit == 0:
             self.limit = defaultlimit
             self.constrainedflow = 0
+
+        # Recorded BEFORE the 0 -> 1 normalization below, which erases the
+        # distinction.  `counterfactual.vendor` needs it to order the circuits
+        # of a bus pair carrying both a line and a transformer.
+        self.is_transformer = bool(ratio != 0 or angle != 0)
 
         if ratio == 0:
             ratio = 1
@@ -128,12 +119,9 @@ class Branch:
         self.maxangle = maxangle
         self.minangle = minangle
 
-        # MATPOWER makeAang.  A branch carries angle-difference limits when
-        # either side is a real limit, or when exactly one of the two is zero;
-        # otherwise the difference is unconstrained.  When it does carry them
-        # BOTH bounds apply as given, with a magnitude past 360 read as
-        # unbounded.  Freeing a one-sided (-30, 0) limit to 2*pi -- which a
-        # naive `if minangle and maxangle` test does -- is wrong: MATPOWER
+        # MATPOWER makeAang.  Both bounds apply as given, a magnitude past 360
+        # reading as unbounded.  Freeing a one-sided (-30, 0) limit to 2*pi --
+        # what a naive `if minangle and maxangle` does -- is wrong: MATPOWER
         # binds that branch at 0.
         constrained = ((minangle != 0 and minangle > -360)
                        or (maxangle != 0 and maxangle < 360)
@@ -171,27 +159,18 @@ class Branch:
         self.Btt = self.Ytt.imag
 
         # --- the Joule heat coefficient, eq (4c) ------------------------------
-        # phi^joule is r_e P_e^2, a dissipation, and a branch does not cool when
-        # it is loaded.  A NEGATIVE series resistance is a fitting artefact of a
-        # three-winding transformer equivalent and is common in the large
-        # synthetic cases: 178 branches on ACTIVSg10k, 447 on ACTIVSg25k and
-        # 1,216 on ACTIVSg70k carry one.
-        #
-        # `r` stays exactly what the case file gives, because the admittance
-        # entries above and the MATPOWER parity test both depend on it.
-        # `r_heat` is what eq (4c) and cut family (6b) use.  Keeping them
-        # separate is not cosmetic: `Phi >= r_e P_e^2` with r_e < 0 is a
-        # CONCAVE constraint, so a single negative resistance would turn the
-        # master from a convex program into a nonconvex one -- and every rung
-        # from ACTIVSg10k upward has one.
+        # A negative series resistance is a three-winding-transformer fitting
+        # artefact and is common above ACTIVSg10k (1,216 branches on 70k).
+        # `r` stays what the file gives -- the admittance entries and the parity
+        # test depend on it -- and `r_heat` is what eq (4c) and cut family (6b)
+        # use: `Phi >= r_e P_e^2` with r_e < 0 is CONCAVE, so one negative
+        # resistance would make the master nonconvex.
         self.r_heat = max(0.0, r)
 
         # --- DC model, MATPOWER makeBdc ---------------------------------------
-        # Computed here, once, rather than at each AMPL setup site.  The two
-        # injections are equal and opposite by construction, which is what lets
-        # the post-event model carry only the from-end flow (Pt == -Pf holds
-        # exactly, phase shifters included).  `test_dc_injections_antisymmetric`
-        # asserts it.
+        # The two injections are equal and opposite by construction, which lets
+        # the post-event model carry only the from-end flow: Pt == -Pf exactly,
+        # phase shifters included.  Asserted by the parity test.
         tap = self.ratio if self.ratio != 0.0 else 1.0
         if abs(self.x) > 1e-12:
             self.bdc = (1.0 / self.x) / tap
@@ -242,10 +221,10 @@ class Generator:
 class Network:
     """A parsed MATPOWER case.
 
-    Buses, branches and generators are keyed by a 1-based COUNT assigned in file
-    order, not by the file's own bus IDs.  Every other module indexes in that
-    space -- ``Branch.id_f``/``id_t`` and ``Bus.genidsbycount`` are counts -- so
-    the AMPL index sets stay contiguous.  ``id_to_count`` maps the file's IDs in.
+    Keyed by a 1-based COUNT in file order, not by the bus IDs the file carries,
+    so the AMPL index sets stay contiguous.  Every other module indexes in that
+    space -- ``Branch.id_f``/``id_t`` and ``Bus.genidsbycount`` are counts --
+    and ``id_to_count`` maps the file IDs in.
     """
 
     baseMVA: float
@@ -287,12 +266,8 @@ class Network:
 
     @property
     def load_pu(self) -> float:
-        """Total demand as p.u. on ``baseMVA``.
-
-        The conversion factor between the textbook load-base damping and the
-        system-base damping the swing equation needs.  See
-        ``counterfactual.frequency.LoadDamping``.
-        """
+        """Total demand as p.u. on ``baseMVA``: the factor between load-base and
+        system-base damping.  See ``counterfactual.frequency.LoadDamping``."""
         return self.sumPd / self.baseMVA
 
     def unconstrained_branches(self) -> List[int]:
@@ -312,10 +287,8 @@ class Network:
 
 def read_matpower(casefilename: str,
                   log: Optional[Callable[[str], None]] = None) -> Network:
-    """Parse a MATPOWER ``.m`` case file into a `Network`.
-
-    `log` takes a single string; omit it for silence.
-    """
+    """Parse a MATPOWER ``.m`` case file into a `Network`.  `log` takes one
+    string; omit it for silence."""
     emit = log or _noop
     t0 = time.time()
     emit(f"reading case file {os.path.basename(casefilename)}\n")
@@ -425,10 +398,9 @@ def _parse_buses(lines, linenum, net: Network, baseMVA, emit) -> int:
             Vmax = float(thisline[11])
             Vmin = float(_strip_terminator(thisline[12]))
 
-            # MATPOWER ext2int removes isolated buses outright.  We keep the bus
-            # so the AMPL index set stays contiguous, and instead zero what it
-            # would contribute: an isolated bus has no incident branch, so a
-            # nonzero Pd there makes its own power-balance row infeasible.
+            # MATPOWER ext2int removes isolated buses; we keep the bus so the
+            # AMPL index set stays contiguous and zero what it contributes --
+            # with no incident branch, a nonzero Pd is an infeasible row.
             if nodetype == 4 and (Pd or Qd or Gs or Bs):
                 emit(f" isolated bus {nodeID} carried Pd {Pd} Qd {Qd} "
                      f"Gs {Gs} Bs {Bs}, zeroed\n")
@@ -491,9 +463,8 @@ def _parse_gens(lines, linenum, net: Network, baseMVA, emit):
                                        linenum - 1)
         net.buses[idgen].addgenerator(gencount)
 
-        # p.u., matching Generator.Pmax/Qmax.  Accumulating these in raw
-        # MW/MVAr made every downstream use dimensionally wrong -- it is what
-        # produced a +/-23,307 p.u. reactive range at the slack on case118.
+        # p.u., matching Generator.Pmax/Qmax.  Accumulated in raw MW/MVAr this
+        # gave a +/-23,307 p.u. reactive range at the slack on case118.
         if net.buses[idgen].nodetype in (2, 3):
             net.summaxgenP += Pmax / baseMVA
             net.summaxgenQ += Qmax / baseMVA
@@ -594,11 +565,9 @@ def _parse_gencost(lines, linenum, net: Network, baseMVA, gencount, emit) -> int
                 f"{degree}; only degrees 0 to 2 are supported. A case with an "
                 f"n=4 gencost row needs converting to n=3 first.")
 
-        # A MATPOWER gencost row is [2, startup, shutdown, n, c_(n-1) ... c_0],
-        # highest power first.  Each term goes into its fixed slot of a length-3
-        # [quad, lin, const] vector rather than a degree-length list, so an n=1
-        # or n=2 row still loads: consumers index [0], [1] and [2]
-        # unconditionally.
+        # A gencost row is [2, startup, shutdown, n, c_(n-1) ... c_0], highest
+        # power first.  Each term goes to its fixed slot of a length-3
+        # [quad, lin, const] vector, so an n=1 or n=2 row still loads.
         costvector = [0.0, 0.0, 0.0]
         for j in range(degree + 1):
             coeff = float(_strip_terminator(thisline[4 + j]))

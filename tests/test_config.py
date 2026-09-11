@@ -169,6 +169,34 @@ def test_an_absolute_lambda_makes_a_single_point(tmp_path):
     assert config.algorithm_config().risk_weight == 500.0
 
 
+def test_flow_domain_defaults_to_the_whole_edge_set():
+    """Every config written before the key existed has to keep meaning what it
+    meant, so the default is the unrestricted maximum of eq (10a)."""
+    assert RunConfig().flow_domain == "all"
+    assert RunConfig().algorithm_config().flow_domain == "all"
+
+
+def test_flow_domain_reaches_the_algorithm(tmp_path):
+    config = read_config(write(tmp_path, "flow_domain = rated\n"))
+    assert config.algorithm_config().flow_domain == "rated"
+
+
+def test_an_unknown_flow_domain_is_an_error(tmp_path):
+    with pytest.raises(ConfigError) as exc:
+        read_config(write(tmp_path, "flow_domain = unrated\n"))
+    assert "flow_domain" in str(exc.value)
+
+
+def test_flow_domain_refuses_the_other_functionals(tmp_path):
+    """The restriction applies to the maximum over lines.  Pairing it with a
+    functional that does not read it would name a restriction the reported
+    number does not carry."""
+    with pytest.raises(ConfigError) as exc:
+        read_config(write(tmp_path,
+                          "metric = joule_loss_max\nflow_domain = rated\n"))
+    assert "max_active_flow" in str(exc.value)
+
+
 def test_the_grid_is_swept_when_no_absolute_lambda_is_given():
     assert RunConfig().weights == (0.0, 0.25, 0.5, 1.0, 2.0, 4.0)
 

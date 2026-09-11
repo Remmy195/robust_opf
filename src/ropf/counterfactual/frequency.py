@@ -8,37 +8,28 @@ surviving generation, signed so that a deficit is positive.
               the nadir falls below f_under, the first stage of under-frequency
               load shedding
 
-THE SCREEN RUNS BEFORE MODEL (D).  Section 4.2 orders it that way, and the order
-has a consequence worth stating because it constrains what may be built here:
-gamma, the response window scale of eq (6d), belongs to (D) and cannot reach the
-nadir.  There is therefore no gamma in this module and no gamma sweep in the
-frequency path.  A screen that responded to gamma would be reporting an effect
-that the method does not contain.
+THE SCREEN RUNS BEFORE MODEL (D), which constrains what may be built here: the
+response window scale of eq (6d) belongs to (D) and cannot reach the nadir.
+There is no gamma in this module, and a screen responding to one would report an
+effect the method does not contain.
 
-THE DAMPING BASE IS PART OF THE VALUE, NOT A CONVENTION.
---------------------------------------------------------
-The swing equation
+THE DAMPING BASE IS PART OF THE VALUE.  The swing equation
 
     2 H_sys d(df)/dt = sum_i dPm_i - delta_P - D df
 
-is on the SYSTEM base: delta_P and H_sys are both p.u. on baseMVA, so D must be
-too.  The textbook figure -- load damping of 1 to 2 % of load per 1 % of
-frequency -- is on the LOAD base, and the two differ by the load-to-baseMVA
-ratio, which is 671 on ACTIVSg2000.  Passing the textbook number raw therefore
-under-damps by a factor of 671, and the failure is quiet: the nadir simply comes
-out deeper, and the run still finishes.
+is on the SYSTEM base, so D must be too.  The textbook figure -- 1 to 2 % of
+load per 1 % of frequency -- is on the LOAD base, and the two differ by the
+load-to-baseMVA ratio, 671 on ACTIVSg2000.  Passing it raw under-damps by that
+factor and fails quietly: the nadir just comes out deeper.
 
-So the damping is not a float here.  `LoadDamping` carries its base with it, and
-`NadirConfig` will not accept a bare number.  A caller must say which quantity
-it holds -- `LoadDamping.per_load(1.5)` or `LoadDamping.on_system_base(0.02)` --
-and the conversion happens in one place that a test can reach.
+So the damping is not a float here.  `LoadDamping` carries its base and refuses
+a bare number, and the conversion happens in one place a test can reach.
 """
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Sequence, Tuple
 
 from ..network import Network
 from .dynamics import UnitDynamics

@@ -1,29 +1,33 @@
 """Model (D): can the surviving network serve its demand, and at what loss.
 
-Section 4.2.  Given a pre-event dispatch P* and a disfigurement, the evaluation
-has three outcomes and reaches the optimization only for the third:
+Section 4.2.  Given a pre-event dispatch P* and a disfigurement:
 
-    excluded   the surviving network is not connected.  A split system is a
-               different operating problem from the one (D) represents, so the
-               sample drops it.  Decided here, before any solve.
-    collapse   the frequency screen rejected it.  Decided by the screen, which
-               runs BEFORE (D); see `ropf.counterfactual.frequency`.
-    survival   (D) solved.  Lost load is zero when a zero-shed dispatch exists
-               inside the response window and the ratings, and positive when
-               none does.
+    excluded   the surviving network is not connected -- a different operating
+               problem from the one (D) represents.  Decided before any solve.
+    collapse   the frequency screen rejected it.  The screen runs BEFORE (D).
+    survival   (D) answered, or the survivors cannot be curtailed to their own
+               demand inside the response window and (D) was never run.  Lost
+               load and the rating violation are SEPARATE numbers, both always
+               reported.
 
-ONE AMPL INSTANCE FOR THE WHOLE CAMPAIGN.  A campaign solves (D) tens of
-thousands of times against the same network.  `PostEvent` loads the network once
-and thereafter only writes parameters, so AMPL never regenerates the model: the
-disfigurement enters through the ``alive_*`` vectors of ``postevent.mod``, and
-the two phases through ``shed_allowed`` and the choice of objective.  The
-lifecycle rule of `ropf.model` applies unchanged -- nothing is closed or dropped
-between solves.
+THE RATING IS SOFT.  Bounding `Pf` by ``beta * U`` is not a measurement at
+gamma = 0: the window pins Pg at P*, so a branch outage DETERMINES the flows and
+bounding a determined quantity removes the solution instead of scoring it.  The
+model carries GO3 slack ``s_jtk^+``, eq (157)-(160), so every admitted draw
+returns `overload_max_pu`, `overload_sum_pu` and `worst_loading`.
 
-THE RESPONSE WINDOW IS COMPUTED HERE, NOT IN AMPL.  Equation (6d) intersects
-``P* +/- pi_g gamma`` with the unit's operating range, and P* can sit a hair
-outside ``[Pmin, Pmax]`` after a solve, which makes the intersection empty.
-Doing it in Python puts the guard somewhere a test can reach it.
+TWO PATHS, ONE ANSWER.  A branch-only event at gamma = 0 leaves (D) no dispatch
+decision, so `frozen` gets the same flows from one sparse linear solve.  Both
+paths fill the same fields; `n_solves` is the only way to tell which ran.
+
+ONE AMPL INSTANCE FOR THE WHOLE CAMPAIGN.  The network is loaded once and only
+parameters are written thereafter: the disfigurement through the ``alive_*``
+vectors, the phases through ``shed_allowed`` and the objective.  The lifecycle
+rule of `ropf.model` applies unchanged.
+
+THE RESPONSE WINDOW IS COMPUTED HERE, NOT IN AMPL, because P* can sit a hair
+outside ``[Pmin, Pmax]`` after a solve and the guard for that needs to be
+somewhere a test can reach it.
 """
 
 from __future__ import annotations
@@ -31,19 +35,38 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, FrozenSet, Iterable, Optional, Sequence, Set, Tuple
+from typing import (Any, Callable, Dict, FrozenSet, Iterable, Optional, Set,
+                    Tuple)
 
 from amplpy import AMPL
 
+from . import frozen
 from ..model import MODFILE_DIR, SolverConfig
 from ..network import Network
 
 POSTEVENT_MODFILE = "postevent.mod"
 
-#: A shed below this is a rounding artefact of the LP, not lost load.
-SHED_TOL = 1e-9
+#: RELATIVE to system demand, not absolute.  Both test a sum over the whole
+#: fleet, so an absolute tolerance at Gurobi FeasibilityTol is exactly the slack
+#: the solver may leave on one row of that sum.  On ACTIVSg2000 the master
+#: balance residual runs 6.6e-10 to 3.9e-6 p.u. and straddled the old constant:
+#: three of eighteen weights lost their whole branch-class screen to solver
+#: noise.  See analysis/FINDING_n_overload_zero.md.
+SHED_RTOL = 1e-6
+BALANCE_RTOL = 1e-6
 
 OUTCOMES = ("excluded", "collapse", "survival")
+
+
+def tolerance(rtol: float, scale: float) -> float:
+    """``rtol`` on a fleet of size ``scale``, floored at ``rtol`` itself."""
+    return rtol * max(1.0, abs(scale))
+
+
+def shed_tolerance(network: Network) -> float:
+    """The one shed tolerance, p.u., for a network.  Section 3.6.  Derived here
+    so a campaign CSV can be read with the number the evaluation used."""
+    return tolerance(SHED_RTOL, network.load_pu)
 
 
 def _noop(_message: str) -> None:
@@ -60,28 +83,22 @@ class PostEventParams:
     """The declared parameters of (D).
 
     gamma
-        The response window scale, p.u.  A unit's window has half-width
-        ``pi_g * gamma``.  No case file in this study carries ramp-rate data, so
-        gamma is a declared study axis, not a measured quantity: it is swept,
-        never assumed at one value and reported as if it were data.
+        Response window scale, p.u.; a window has half-width ``pi_g * gamma``.
+        No case file here carries ramp-rate data, so gamma is a declared study
+        axis that is swept, never assumed at one value and reported as data.
     beta
-        The emergency rating factor of eq (6e).  1 is the NORMAL rating; the
-        default here is 1.2, a 20% short-term overload.
-
-        This is an ASSUMPTION, not data.  No case in this study carries a
-        usable emergency rating -- rateB and rateC are zero across every
-        ACTIVSg distribution -- so the number cannot be read off the case the
-        way a normal rating can.  20% is the conventional order of magnitude
-        for a short-term line rating and is used here so that (D) is not
-        dispatching a post-event system against normal ratings, which would
-        overstate lost load by forbidding exactly the temporary overload an
-        emergency rating exists to allow.  It wants a citation before it is
-        reported, and it is a declared parameter rather than a constant so that
-        it can be swept.
+        The emergency rating factor of eq (6e).  Defaults to 1, the NORMAL
+        rating: rateB and rateC are zero across every ACTIVSg distribution, but
+        all six .aux files carry the same LimitSet record -- rate set "A" for
+        the base case and again for the CONTINGENCY case at LSLinePercent 100 --
+        so the published rule is rating A at 100 percent.  1.2 stays in the
+        sweep as a short-term-overload sensitivity and is labelled an
+        assumption where it is used.  Re-reading a campaign at another factor
+        is free: `worst_loading` does not mention beta.
     """
 
     gamma: float
-    beta: float = 1.2
+    beta: float = 1.0
 
     def __post_init__(self) -> None:
         if self.gamma < 0:
@@ -94,12 +111,9 @@ class PostEventParams:
 
 @dataclass(frozen=True)
 class Disfigurement:
-    """What a disfigurement removes, as network counts.
-
-    A removed bus deletes every line incident to it and every unit located at
-    it; a removed line deletes that line alone.  `survivors` applies that
-    closure, so a caller may pass buses alone.
-    """
+    """What a disfigurement removes, as network counts.  A removed bus deletes
+    every incident line and every unit at it; `survivors` applies that closure,
+    so a caller may pass buses alone."""
 
     buses: FrozenSet[int] = frozenset()
     branches: FrozenSet[int] = frozenset()
@@ -108,11 +122,8 @@ class Disfigurement:
 
     @property
     def size(self) -> int:
-        """K, the number of components the disfigurement names.
-
-        Units removed with their bus are not components in their own right;
-        Section 4.1.2 counts buses and lines.
-        """
+        """K.  Section 4.1.2 counts buses and lines; a unit removed with its bus
+        is not a component in its own right."""
         return len(self.buses) + len(self.branches)
 
 
@@ -122,21 +133,40 @@ class PostEventResult:
 
     outcome: str
     reason: str = ""
-    #: L, p.u.  None when (D) was never solved.
+    #: L, p.u.  None when (D) was neither solved nor short-circuited; 0.0 when
+    #: an uncurtailable surplus made the answer known without a solve (see
+    #: `PostEvent.evaluate`).
     lost_load: Optional[float] = None
     #: z-hat, the post-event generation cost, $.
     cost: Optional[float] = None
-    #: Which phase produced the answer: 'cost' or 'loadshed'.
+    #: Which phase produced the answer: 'cost', 'overload', 'loadshed', or
+    #: 'curtailed' for the uncurtailable-surplus short-circuit, which reaches no
+    #: phase at all.  Named so a campaign can count how many rows never reached
+    #: the flow model.
     phase: Optional[str] = None
     shed_by_bus: Dict[int, float] = field(default_factory=dict)
     Pg: Dict[int, float] = field(default_factory=dict)
 
+    # --- eq (6e): what the ratings had to give -------------------------------
+    #: max_e |Pf_e| / U_e over surviving RATED branches.  The parameter-free
+    #: severity number: it does not mention beta, so one campaign can be re-read
+    #: at any emergency rating factor without re-solving.
+    worst_loading: Optional[float] = None
+    #: The branch attaining `worst_loading`.  One at-rating branch can decide a
+    #: whole instance: ACTIVSg500 branch 144 does.
+    worst_branch: Optional[int] = None
+    #: max_e s_e, p.u.  GO3's largest s_jtk^+, eq (157)-(160).
+    overload_max_pu: Optional[float] = None
+    #: sum_e s_e, p.u.  GO3's summed violation penalty.
+    overload_sum_pu: Optional[float] = None
+    #: The absolute shed tolerance applying to `lost_load`, p.u.  Section 3.6.
+    shed_tol: float = SHED_RTOL
+
     n_buses: int = 0
     n_branches: int = 0
     n_gens: int = 0
-    #: Demand the removed buses took with them, p.u.  Not lost load -- eq (6f)
-    #: sums over the surviving buses -- but two disfigurements are not
-    #: comparable on L without it.
+    #: Demand the removed buses took with them, p.u.  Not lost load (eq (6f)
+    #: sums over survivors), but L is not comparable across events without it.
     removed_demand_pu: float = 0.0
     solve_time_s: float = 0.0
     n_solves: int = 0
@@ -147,7 +177,15 @@ class PostEventResult:
 
     @property
     def served_all_demand(self) -> bool:
-        return self.outcome == "survival" and (self.lost_load or 0.0) <= SHED_TOL
+        return (self.outcome == "survival"
+                and (self.lost_load or 0.0) <= self.shed_tol)
+
+    @property
+    def overloaded(self) -> bool:
+        """A rating violation the post-event system could not dispatch away.  At
+        gamma = 0 on the branch class this IS the binding set."""
+        return (self.outcome == "survival"
+                and (self.overload_max_pu or 0.0) > 0.0)
 
 
 ###############################################################################
@@ -159,9 +197,8 @@ def survivors(network: Network,
               disfigurement: Disfigurement) -> Tuple[Set[int], Set[int], Set[int]]:
     """Apply the removal closure.  Returns the SURVIVING (buses, branches, gens).
 
-    A unit already out of service in the case file is never alive, so it cannot
-    be "removed" twice and cannot be counted as a survivor that contributes
-    capacity.  Out-of-service branches are not in `Network.branches` at all.
+    A unit already out of service is never alive, so it cannot be removed twice
+    nor counted as a survivor contributing capacity.
     """
     dead_buses = {int(b) for b in disfigurement.buses}
     dead_branches = {int(e) for e in disfigurement.branches}
@@ -188,12 +225,9 @@ def survivors(network: Network,
 def is_connected(network: Network,
                  live_buses: Set[int],
                  live_branches: Set[int]) -> bool:
-    """True when the surviving buses form one connected component.
-
-    Section 4.2 excludes a disfigurement that splits the network.  This is the
-    test that decides it, and it is why (D) never needs a per-island reference
-    bus or a per-island power balance.
-    """
+    """True when the surviving buses form one connected component.  Section 4.2
+    excludes a split network, which is why (D) needs no per-island reference bus
+    or power balance."""
     if not live_buses:
         return False
 
@@ -223,11 +257,13 @@ def response_window(network: Network,
                     gamma: float) -> Tuple[Dict[int, float], Dict[int, float]]:
     """eq (6d), intersected with the operating range.  Returns (lo, hi).
 
-    The guard matters: P* comes from a solved master and can sit outside
-    ``[Pmin, Pmax]`` by the solver's own tolerance, which makes the naive
-    intersection empty and (D) infeasible for a reason that has nothing to do
-    with the disfigurement.  Where that happens the window collapses to the
-    nearest feasible output rather than being reported as a contingency.
+    Symmetric and deliberately no wider: a wider window would let (D) use the
+    same slack to resolve a genuine emergency-rating violation.
+
+    The guard matters.  P* comes from a solved master and can sit outside
+    ``[Pmin, Pmax]`` by the solver tolerance, making the naive intersection
+    empty and (D) infeasible for a reason unrelated to the disfigurement; there
+    the window collapses to the nearest feasible output.
     """
     lo: Dict[int, float] = {}
     hi: Dict[int, float] = {}
@@ -243,12 +279,9 @@ def response_window(network: Network,
 
 
 def capacity_participation(network: Network) -> Dict[int, float]:
-    """pi_g proportional to capacity, normalized over the in-service fleet.
-
-    The default when no AGC participation factor is available for a case.  It
-    is a surrogate and is named one: `ropf.counterfactual.dynamics` reads the
-    real factors where the distribution ships them.
-    """
+    """pi_g proportional to capacity, over the in-service fleet.  The surrogate
+    used when no AGC factor is available; `dynamics` reads the real ones where
+    the distribution ships them."""
     total = sum(gen.Pmax for gen in network.gens.values() if gen.status)
     if total <= 0:
         return {count: 0.0 for count in network.gens}
@@ -286,14 +319,21 @@ class PostEvent:
         self.solver.apply(self.ampl, self.log)
         self._load_network()
 
-        # Which components the last evaluation left alive, so that only the
-        # difference is written on the next one.  A campaign changes a handful
-        # of entries at a time; rewriting all 88,207 of them on
-        # every solve is most of the cost at the top rung.
+        # What the last evaluation left alive, so only the difference is
+        # written next time.  Rewriting all 88,207 entries per solve is most of
+        # the cost at the top instance.
         self._alive_bus: Set[int] = set(network.buses)
         self._alive_br: Set[int] = set(network.branches)
         self._alive_gen: Set[int] = {c for c, g in network.gens.items() if g.status}
         self._write_alive_gen(self._alive_gen)
+
+        self._shed_tol = shed_tolerance(network)
+
+        # The fleet as the case ships it.  `_alive_gen` moves with every solve;
+        # this does not, and `evaluate` needs the fixed one to ask what an event
+        # actually took out -- a vendor list names already-offline units.
+        self._in_service: Set[int] = {c for c, g in network.gens.items()
+                                      if g.status}
 
     # -- construction ------------------------------------------------------
 
@@ -334,8 +374,7 @@ class PostEvent:
             branches_t[count].setValues(list(bus.tobranchids.values()))
             bus_gens[count].setValues(list(bus.genidsbycount))
 
-        # A window is required for every unit before the first solve; the
-        # evaluation overwrites it.
+        # Required before the first solve; the evaluation overwrites it.
         ampl.get_parameter("Pg_lo").setValues({c: 0.0 for c in net.gens})
         ampl.get_parameter("Pg_hi").setValues({c: 0.0 for c in net.gens})
         ampl.get_parameter("ref_bus").set(int(net.refbus or min(net.buses)))
@@ -371,8 +410,8 @@ class PostEvent:
         """One disfigurement against one dispatch.  See the module docstring.
 
         `screen` takes the surviving generator counts and returns
-        ``(cleared, reason)``.  It runs after the connectivity exclusion and
-        before (D), which is the order Section 4.2 states.
+        ``(cleared, reason)``, and runs after the connectivity exclusion and
+        before (D) -- the order Section 4.2 states.
         """
         live_buses, live_branches, live_gens = survivors(self.network,
                                                          disfigurement)
@@ -385,81 +424,259 @@ class PostEvent:
         if not is_connected(self.network, live_buses, live_branches):
             return PostEventResult(outcome="excluded",
                                    reason="the surviving network is disconnected",
-                                   **counts)
+                                   shed_tol=self._shed_tol, **counts)
 
         # ---- the frequency screen, before (D) ------------------------------
         if screen is not None:
             cleared, why = screen(live_gens)
             if not cleared:
-                return PostEventResult(outcome="collapse", reason=why, **counts)
+                return PostEventResult(outcome="collapse", reason=why,
+                                       shed_tol=self._shed_tol, **counts)
 
-        self._apply(live_buses, live_branches, live_gens, P_star, pi, params)
+        # ---- WHAT DID THE EVENT ACTUALLY REMOVE? ---------------------------
+        # Decides both the guard below and the routing rule after it, so it is
+        # asked once.  `determined` means the event takes nothing off either
+        # side of the balance -- no bus, no injection -- so at gamma = 0 the
+        # flows follow from P* and the surviving topology alone.
+        #
+        # NAMING A UNIT IS NOT REMOVING ONE: the test is on the injection taken
+        # out, not the set named.  A vendor contingency naming an offline unit,
+        # or one at Pmin = Pmax = 0, is the undisturbed network under another
+        # name; deciding those by set membership sends 114 rows per weight to an
+        # LP pinned by the balance residual.
+        live_demand = sum(self.network.buses[b].Pd for b in live_buses)
+        window = response_window(self.network, P_star, pi, params.gamma)
+        lost_supply = sum(window[0][g] for g in self._in_service - live_gens)
+        determined = (not disfigurement.buses
+                      and lost_supply <= self._shed_tol)
 
+        # ---- an UNCURTAILABLE surplus is never put to (D) -------------------
+        # If every surviving unit sits at the bottom of its eq (6d) window and
+        # the survivors still overproduce, the cost phase is infeasible for a
+        # reason belonging to gamma, not to the disfigurement.  The operator
+        # curtails the excess; widening the window instead would let (D) paper
+        # over a genuine rating violation elsewhere.
+        #
+        # AN EVENT THAT REMOVES NOTHING HAS NO SURPLUS TO FIND, so the guard is
+        # skipped there.  Otherwise the test reduces to the balance residual, a
+        # scalar not mentioning the contingency, and goes all-or-nothing over
+        # the whole branch class.
+        if not determined:
+            floor = sum(window[0][g] for g in live_gens)
+            if floor > live_demand + tolerance(BALANCE_RTOL,
+                                               self.network.load_pu):
+                return PostEventResult(
+                    outcome="survival", lost_load=0.0, phase="curtailed",
+                    shed_tol=self._shed_tol,
+                    reason="the survivors cannot be curtailed to their own "
+                           "demand inside the response window; the excess is "
+                           "curtailed by the operator and not evaluated by (D)",
+                    **counts)
+
+        # ---- the routing rule ----------------------------------------------
+        # removes no injection, gamma = 0   closed form, no AMPL
+        # removes no injection, gamma > 0   LP
+        # removes a bus or an injection     LP
+        #
+        # The first row is not a screen and not a bound: no dispatch decision is
+        # left for the LP to make, so the closed form is exact and the LP is a
+        # slower route to the same numbers.  Both fill the same fields.
+        if determined and params.gamma == 0.0:
+            return self._frozen(params, live_buses, live_branches, live_gens,
+                                window, counts)
+        return self._solve(params, live_buses, live_branches, live_gens,
+                           window, counts, shed_can_move=True)
+
+    # -- the two paths -----------------------------------------------------
+
+    def _frozen(self, params: PostEventParams,
+                live_buses: Set[int], live_branches: Set[int],
+                live_gens: Set[int],
+                window: Tuple[Dict[int, float], Dict[int, float]],
+                counts: Dict[str, Any]) -> PostEventResult:
+        """(D) in closed form.  See `ropf.counterfactual.frozen`."""
         started = time.time()
-        # ---- phase 1: the cheapest dispatch that sheds nothing -------------
+        buses = sorted(live_buses)
+        index = {bus: row for row, bus in enumerate(buses)}
+        pinned = {g: window[0][g] for g in live_gens}
+
+        injection = {}
+        for count in buses:
+            bus = self.network.buses[count]
+            injection[count] = (sum(pinned.get(int(g), 0.0)
+                                    for g in bus.genidsbycount)
+                                - bus.Pd - bus.Gs)
+
+        pf = frozen.flows(self.network, buses, index, live_branches, injection,
+                          ref=self._reference(live_buses))
+        load = frozen.summarize(self.network, pf, params.beta)
+
+        # The same two outcomes the LP path reaches, and the same words for
+        # them: nothing downstream may be able to tell which path ran.
+        if load.overload_max_pu > 0.0:
+            phase, reason = "overload", (
+                "no operating point respects the emergency ratings, and at "
+                "gamma = 0 nothing may move to relieve them")
+        else:
+            phase, reason = "cost", "all demand served"
+
+        return PostEventResult(
+            outcome="survival", phase=phase, reason=reason,
+            lost_load=0.0, cost=self._generation_cost(pinned), Pg=pinned,
+            worst_loading=load.worst_loading, worst_branch=load.worst_branch,
+            overload_max_pu=load.overload_max_pu,
+            overload_sum_pu=load.overload_sum_pu, shed_tol=self._shed_tol,
+            solve_time_s=time.time() - started, n_solves=0, **counts)
+
+    def _solve(self, params: PostEventParams,
+               live_buses: Set[int], live_branches: Set[int],
+               live_gens: Set[int],
+               window: Tuple[Dict[int, float], Dict[int, float]],
+               counts: Dict[str, Any],
+               shed_can_move: bool) -> PostEventResult:
+        """(D) as the LP, in the lexicographic order `postevent.mod` declares.
+
+        THE CHEAP PHASE IS TRIED FIRST.  A draw with a zero-overload, zero-shed
+        operating point has overload optimum 0 by inspection and the cost phase
+        IS that optimum, so trying it first leaves the common case at one solve
+        instead of two.  The answer is the same either way.
+
+        `shed_can_move` is False exactly on an event removing no injection at
+        gamma = 0, where sum(L) is pinned at the balance residual and the
+        load-shed phase feasible set IS the cost phase one.  That case normally
+        takes the closed-form path and reaches this method only when a caller
+        forces the LP, which the path-agreement test does.
+        """
+        self._apply(live_buses, live_branches, live_gens, params, window)
+        started = time.time()
+        solves = 0
+
+        # ---- phase `cost`: the cheapest dispatch that sheds nothing and
+        #      violates no rating.  eq (6e) as a hard bound is s_cap = 0.
+        self.ampl.get_parameter("s_capped").set(1)
+        self.ampl.get_parameter("s_cap").set(0.0)
         self.ampl.get_parameter("shed_allowed").set(0)
         self.ampl.eval("objective gen_cost;")
         self.ampl.solve()
-        status = str(self.ampl.get_value("solve_result"))
+        solves += 1
 
-        if status == "solved":
+        if str(self.ampl.get_value("solve_result")) == "solved":
+            load = self._loading(live_branches, params.beta)
             return PostEventResult(
                 outcome="survival", reason="all demand served",
                 lost_load=0.0,
                 cost=float(self.ampl.get_objective("gen_cost").value()),
                 phase="cost", Pg=self._live_values("Pg", live_gens),
-                solve_time_s=time.time() - started, n_solves=1, **counts)
+                worst_loading=load.worst_loading,
+                worst_branch=load.worst_branch,
+                overload_max_pu=load.overload_max_pu,
+                overload_sum_pu=load.overload_sum_pu, shed_tol=self._shed_tol,
+                solve_time_s=time.time() - started, n_solves=solves, **counts)
 
-        # ---- phase 2: the smallest lost load -------------------------------
-        # Reaching here means no zero-shed operating point exists inside the
-        # response window and the ratings.  Phase 2 always has a solution --
-        # shedding every bus is feasible -- so a phase 2 that does not solve is
-        # a modelling error and is reported as one, never as a survival.
+        # ---- phase `overload`: the smallest rating violation admitted.
+        #      Shedding is allowed exactly when the event allows it at all: the
+        #      cost phase can fail for a balance reason as well as a rating one,
+        #      and only shedding answers the first.  Ratings before load is the
+        #      ordering the hard-rating model already had.
+        self.ampl.get_parameter("s_capped").set(0)
+        self.ampl.get_parameter("shed_allowed").set(1 if shed_can_move else 0)
+        self.ampl.eval("objective overload;")
+        self.ampl.solve()
+        solves += 1
+        status = str(self.ampl.get_value("solve_result"))
+
+        if status != "solved":
+            # Not a rating failure: `s` absorbs every rating.  The survivors
+            # cannot balance inside the response window even with every bus
+            # shed, which the guard above is meant to have caught.
+            return PostEventResult(
+                outcome="survival", phase="overload", shed_tol=self._shed_tol,
+                reason=f"the overload phase returned {status!r}; the ratings "
+                       f"cannot cause that, so the survivors do not balance "
+                       f"inside the response window at any lost load",
+                solve_time_s=time.time() - started, n_solves=solves, **counts)
+
+        s_star = float(self.ampl.get_objective("overload").value())
+
+        if not shed_can_move:
+            load = self._loading(live_branches, params.beta)
+            Pg = self._live_values("Pg", live_gens)
+            return PostEventResult(
+                outcome="survival", phase="overload", Pg=Pg,
+                reason="no operating point respects the emergency ratings, "
+                       "and at gamma = 0 nothing may move to relieve them",
+                lost_load=0.0, cost=self._generation_cost(Pg),
+                worst_loading=load.worst_loading,
+                worst_branch=load.worst_branch,
+                overload_max_pu=load.overload_max_pu,
+                overload_sum_pu=load.overload_sum_pu, shed_tol=self._shed_tol,
+                solve_time_s=time.time() - started, n_solves=solves, **counts)
+
+        # ---- phase `loadshed`: the smallest lost load at that overload.
+        #      Held at s_star, not zero, so this phase never has to buy back an
+        #      overload the network could not avoid.  Feasible whenever the
+        #      overload phase was, so a failure here IS a modelling error.
+        self.ampl.get_parameter("s_capped").set(1)
+        self.ampl.get_parameter("s_cap").set(
+            s_star + tolerance(BALANCE_RTOL, self.network.load_pu))
         self.ampl.get_parameter("shed_allowed").set(1)
         self.ampl.eval("objective lost_load;")
         self.ampl.solve()
+        solves += 1
         status = str(self.ampl.get_value("solve_result"))
         elapsed = time.time() - started
 
         if status != "solved":
             return PostEventResult(
-                outcome="survival", phase="loadshed",
+                outcome="survival", phase="loadshed", shed_tol=self._shed_tol,
                 reason=f"the load-shed phase returned {status!r}, which cannot "
-                       f"happen for a connected network: shedding every bus is "
-                       f"feasible",
-                solve_time_s=elapsed, n_solves=2, **counts)
+                       f"happen once the overload phase has solved: its "
+                       f"solution sheds nothing and is still feasible here",
+                solve_time_s=elapsed, n_solves=solves, **counts)
 
         shed = {bus: value
                 for bus, value in self._live_values("L", live_buses).items()
-                if value > SHED_TOL}
+                if value > self._shed_tol}
         Pg = self._live_values("Pg", live_gens)
+        load = self._loading(live_branches, params.beta)
         return PostEventResult(
             outcome="survival", phase="loadshed",
             reason="no zero-shed operating point exists",
             lost_load=float(self.ampl.get_objective("lost_load").value()),
             cost=self._generation_cost(Pg), shed_by_bus=shed, Pg=Pg,
-            solve_time_s=elapsed, n_solves=2, **counts)
+            worst_loading=load.worst_loading, worst_branch=load.worst_branch,
+            overload_max_pu=load.overload_max_pu,
+            overload_sum_pu=load.overload_sum_pu, shed_tol=self._shed_tol,
+            solve_time_s=elapsed, n_solves=solves, **counts)
+
+    def _loading(self, live_branches: Set[int], beta: float) -> frozen.Loading:
+        """The severity numbers of the solve that just finished.  Read off `Pf`,
+        not `s`: outside the overload phase `s` is held only by the budget row
+        and may sit above its minimum, and the closed form has no `s`."""
+        return frozen.summarize(self.network,
+                                self._live_values("Pf", live_branches), beta)
 
     def _apply(self, live_buses, live_branches, live_gens,
-               P_star, pi, params: PostEventParams) -> None:
+               params: PostEventParams,
+               window: Tuple[Dict[int, float], Dict[int, float]]) -> None:
+        """Write the disfigurement and the window into the loaded instance.  The
+        window is passed in, not recomputed: `evaluate` needs its floor to
+        decide whether (D) is asked at all."""
         self._write_alive("alive_bus", self._alive_bus, live_buses)
         self._write_alive("alive_br", self._alive_br, live_branches)
         self._write_alive("alive_gen", self._alive_gen, live_gens)
         self._alive_bus, self._alive_br, self._alive_gen = \
             set(live_buses), set(live_branches), set(live_gens)
 
-        lo, hi = response_window(self.network, P_star, pi, params.gamma)
+        lo, hi = window
         self.ampl.get_parameter("Pg_lo").setValues(lo)
         self.ampl.get_parameter("Pg_hi").setValues(hi)
         self.ampl.get_parameter("beta").set(float(params.beta))
         self.ampl.get_parameter("ref_bus").set(self._reference(live_buses))
 
     def _reference(self, live_buses: Set[int]) -> int:
-        """eq (6g).  The pre-event reference bus where it survives, else any.
-
-        The network is connected by the time this is reached, so the choice
-        only fixes the gauge.
-        """
+        """eq (6g).  The pre-event reference bus where it survives, else any; the
+        network is connected by here, so the choice only fixes the gauge."""
         if self.network.refbus in live_buses:
             return int(self.network.refbus)
         for count in sorted(live_buses):

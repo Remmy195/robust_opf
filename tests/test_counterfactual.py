@@ -207,6 +207,28 @@ def test_a_tight_window_forces_load_shedding(net, evaluator, nominal):
                                              rel=1e-6)
 
 
+def test_a_surplus_is_never_put_to_d(net, evaluator, nominal):
+    """Removing only demand (no generation) leaves the survivors' own
+    pre-event output covering their own demand -- a surplus, curtailed by
+    the operator and never handed to the optimization at all.
+    """
+    pi = postevent.capacity_participation(net)
+    candidates = sorted(
+        (c for c, b in net.buses.items()
+         if b.Pd > 0 and b.degree > 1 and not b.genidsbycount),
+        key=lambda c: net.buses[c].degree, reverse=True)
+    for bus in candidates:
+        result = evaluator.evaluate(nominal, pi, PostEventParams(gamma=0.5),
+                                    Disfigurement(buses=frozenset({bus})))
+        if result.outcome != "excluded":
+            break
+    else:
+        pytest.skip("every pure-demand candidate bus splits this fixture")
+    assert result.outcome == "survival"
+    assert result.lost_load == pytest.approx(0.0)
+    assert result.n_solves == 0
+
+
 def test_evaluations_do_not_leak_into_each_other(net, evaluator, nominal):
     """The campaign reuses one AMPL instance; the state must not accumulate."""
     pi = postevent.capacity_participation(net)
@@ -460,3 +482,275 @@ def test_different_seeds_give_different_walks(net):
     first = disfigure.walk_draws(net, 20, 5, seed=1)
     second = disfigure.walk_draws(net, 20, 5, seed=2)
     assert [d.buses for d in first] != [d.buses for d in second]
+
+
+###############################################################################
+# The uncurtailable-surplus guard
+#
+# It used to compare pre-event OUTPUT against surviving demand, which at DC
+# balance reduces to "was at least as much load removed as generation".  That is
+# true of every branch-only event, where nothing is removed from either side, so
+# every branch outage returned "no lost load" without building the flow model.
+###############################################################################
+
+
+def test_a_branch_only_outage_reaches_the_flow_model(net, evaluator, nominal):
+    """The regression.  A branch outage removes no load and no generation, so
+    the old guard fired on all of them; nothing about serving load says the
+    surviving network can still route it within the ratings."""
+    pi = postevent.capacity_participation(net)
+    params = PostEventParams(gamma=0.5)
+
+    reached = 0
+    for branch in sorted(net.branches):
+        result = evaluator.evaluate(nominal, pi, params,
+                                    Disfigurement(branches=frozenset({branch})))
+        if result.outcome != "survival":
+            continue
+        assert result.phase != "curtailed", (
+            f"branch {branch} short-circuited as an uncurtailable surplus, but "
+            f"a branch outage removes nothing to curtail")
+        if result.n_solves > 0:
+            reached += 1
+    assert reached > 0, "no branch outage reached (D)"
+
+
+def test_the_guard_is_on_the_window_floor_not_pre_event_output(net):
+    """The floor is what decides it: with no downward room a survivor cannot be
+    curtailed at all, and with room to spare it can."""
+    pi = postevent.capacity_participation(net)
+    live = {c for c, g in net.gens.items() if g.status}
+
+    pinned, _ = response_window(net, {c: net.gens[c].Pmax for c in live},
+                                pi, gamma=0.0)
+    loose, _ = response_window(net, {c: net.gens[c].Pmax for c in live},
+                               pi, gamma=1e6)
+    assert sum(pinned[c] for c in live) >= sum(loose[c] for c in live)
+
+
+def test_an_uncurtailable_surplus_is_marked_curtailed(net, evaluator, nominal):
+    """Removing demand with no downward room leaves a surplus (D) cannot
+    balance.  It short-circuits, and says so in `phase` so a campaign can count
+    the rows that never reached the flow model."""
+    pi = postevent.capacity_participation(net)
+    candidates = sorted(
+        (c for c, b in net.buses.items()
+         if b.Pd > 0 and b.degree > 1 and not b.genidsbycount),
+        key=lambda c: net.buses[c].Pd, reverse=True)
+    for bus in candidates:
+        result = evaluator.evaluate(nominal, pi, PostEventParams(gamma=0.0),
+                                    Disfigurement(buses=frozenset({bus})))
+        if result.outcome == "survival":
+            break
+    else:
+        pytest.skip("every pure-demand candidate bus splits this fixture")
+
+    assert result.phase == "curtailed"
+    assert result.n_solves == 0
+    assert result.lost_load == pytest.approx(0.0)
+
+
+def test_a_wide_window_sends_the_same_event_to_the_model(net, evaluator, nominal):
+    """The complement: give the fleet room to ramp down and the same removal is
+    no longer uncurtailable, so it goes to (D) instead of short-circuiting."""
+    pi = postevent.capacity_participation(net)
+    candidates = sorted(
+        (c for c, b in net.buses.items()
+         if b.Pd > 0 and b.degree > 1 and not b.genidsbycount),
+        key=lambda c: net.buses[c].Pd, reverse=True)
+    for bus in candidates:
+        tight = evaluator.evaluate(nominal, pi, PostEventParams(gamma=0.0),
+                                   Disfigurement(buses=frozenset({bus})))
+        if tight.outcome == "survival" and tight.phase == "curtailed":
+            break
+    else:
+        pytest.skip("no candidate bus short-circuits on this fixture")
+
+    wide = evaluator.evaluate(nominal, pi, PostEventParams(gamma=1e6),
+                              Disfigurement(buses=frozenset({bus})))
+    assert wide.outcome == "survival"
+    assert wide.phase != "curtailed"
+    assert wide.n_solves > 0
+
+
+###############################################################################
+# eq (6e) as a slack, and the two paths that report it
+#
+# `Pf` used to be bounded by beta * U.  At gamma = 0 the response window pins
+# Pg at P*, so on a branch outage the post-event flows are DETERMINED, and
+# bounding a determined quantity does not measure the violation, it removes the
+# solution: both phases returned `infeasible` and the contingencies that
+# mattered most reported no number at all.
+###############################################################################
+
+
+def _connected_branches(net, limit=None):
+    """Branch outages that leave the network in one piece."""
+    live = []
+    for count in sorted(net.branches):
+        item = Disfigurement(branches=frozenset({count}))
+        buses, branches, _ = survivors(net, item)
+        if is_connected(net, buses, branches):
+            live.append(count)
+        if limit is not None and len(live) >= limit:
+            break
+    return live
+
+
+def _forced_lp(evaluator, net, P_star, pi, params, item):
+    """The same evaluation, forced down the LP even where the closed form runs.
+
+    `evaluate` routes a branch-only event at gamma = 0 to the closed form, so
+    the comparison has to reach past it.  `shed_can_move=False` is the gate the
+    router would have applied: sum(L) is pinned by the balance identity, so the
+    load-shed phase's feasible set is the cost phase's and asking it proves
+    nothing.
+    """
+    buses, branches, gens = survivors(net, item)
+    window = response_window(net, P_star, pi, params.gamma)
+    counts = dict(n_buses=len(buses), n_branches=len(branches),
+                  n_gens=len(gens), removed_demand_pu=0.0)
+    return evaluator._solve(params, buses, branches, gens, window, counts,
+                            shed_can_move=False)
+
+
+def test_the_closed_form_and_the_lp_agree(net, evaluator, nominal):
+    """The correctness test for the fast path, and the reason it can be
+    trusted at 25k and 70k where the LP comparison is not affordable.
+
+    At gamma = 0 on a branch-only event there is no dispatch decision left, so
+    the closed form is the exact answer rather than a screen or a bound.  Both
+    paths must therefore agree on the severity numbers, not merely bracket each
+    other, and nothing downstream may be able to tell which one ran apart from
+    `n_solves` and `solve_time_s`.
+    """
+    pi = postevent.capacity_participation(net)
+    params = PostEventParams(gamma=0.0, beta=1.2)
+
+    checked = 0
+    for count in _connected_branches(net):
+        item = Disfigurement(branches=frozenset({count}))
+        fast = evaluator.evaluate(nominal, pi, params, item)
+        slow = _forced_lp(evaluator, net, nominal, pi, params, item)
+
+        assert fast.n_solves == 0, "the closed form must not reach AMPL"
+        assert slow.n_solves > 0
+        assert fast.outcome == slow.outcome == "survival"
+        assert fast.phase == slow.phase
+        assert fast.worst_loading == pytest.approx(slow.worst_loading,
+                                                   rel=1e-8)
+        assert fast.overload_max_pu == pytest.approx(slow.overload_max_pu,
+                                                     abs=1e-8)
+        assert fast.cost == pytest.approx(slow.cost, rel=1e-8)
+        assert fast.lost_load == pytest.approx(slow.lost_load, abs=1e-9)
+        checked += 1
+
+    assert checked > 0, "no branch outage kept this fixture connected"
+
+
+def test_the_closed_form_runs_only_where_nothing_may_move(net, evaluator,
+                                                          nominal):
+    """The routing rule.  Branch-only at gamma = 0 is the closed form; a wider
+    window or an event that removes a component is the LP."""
+    pi = postevent.capacity_participation(net)
+    branch = _connected_branches(net, limit=1)[0]
+    item = Disfigurement(branches=frozenset({branch}))
+
+    assert evaluator.evaluate(nominal, pi, PostEventParams(gamma=0.0),
+                              item).n_solves == 0
+    assert evaluator.evaluate(nominal, pi, PostEventParams(gamma=0.5),
+                              item).n_solves > 0
+
+    biggest = max(nominal, key=lambda g: nominal[g])
+    unit = evaluator.evaluate(nominal, pi, PostEventParams(gamma=0.0),
+                              Disfigurement(gens=frozenset({biggest})))
+    assert unit.n_solves > 0
+
+
+def test_every_admitted_draw_reports_a_loading(net, evaluator, nominal):
+    """The point of the slack.  A row that reaches (D) at all must come back
+    with a severity number, whichever phase produced it."""
+    pi = postevent.capacity_participation(net)
+    biggest = max(nominal, key=lambda g: nominal[g])
+    branch = _connected_branches(net, limit=1)[0]
+
+    for gamma, item in ((0.0, Disfigurement(branches=frozenset({branch}))),
+                        (0.5, Disfigurement(branches=frozenset({branch}))),
+                        (0.0, Disfigurement(gens=frozenset({biggest}))),
+                        (0.5, Disfigurement())):
+        result = evaluator.evaluate(nominal, pi, PostEventParams(gamma=gamma),
+                                    item)
+        assert result.outcome == "survival"
+        assert result.worst_loading is not None, (gamma, result.phase)
+        assert result.overload_max_pu is not None
+        assert result.overload_sum_pu is not None
+
+
+def test_a_rating_the_flows_cannot_respect_is_reported_not_refused(
+        net, evaluator, nominal):
+    """The regression for the whole change.
+
+    beta is bounded below by 1, so the way to make a DETERMINED flow pattern
+    violate a rating is to lower the rating.  Halve every rating and the same
+    branch outage that cleared at 0.71 of rateA now sits at 1.42 of it, with
+    nothing free to move.  Under the hard bound both phases returned
+    `infeasible` and the row carried no number.  It must carry a magnitude.
+    """
+    pi = postevent.capacity_participation(net)
+    branch = _connected_branches(net, limit=1)[0]
+    item = Disfigurement(branches=frozenset({branch}))
+    params = PostEventParams(gamma=0.0, beta=1.0)
+
+    original = {c: b.limit for c, b in net.branches.items()}
+    try:
+        for count, limit in original.items():
+            net.branches[count].limit = 0.5 * limit
+        squeezed = postevent.PostEvent(net, evaluator.solver)
+        fast = squeezed.evaluate(nominal, pi, params, item)
+        slow = _forced_lp(squeezed, net, nominal, pi, params, item)
+    finally:
+        for count, limit in original.items():
+            net.branches[count].limit = limit
+
+    assert fast.phase == "overload"
+    assert fast.overload_max_pu > 0.0
+    assert fast.overload_sum_pu >= fast.overload_max_pu
+    assert fast.worst_loading > 1.0
+    # At gamma = 0 on a branch outage sum(L) is pinned by the balance identity,
+    # so the overload is the whole of the result and the zero is genuine.
+    assert fast.lost_load == pytest.approx(0.0)
+
+    assert slow.phase == "overload"
+    assert slow.overload_max_pu == pytest.approx(fast.overload_max_pu, rel=1e-6)
+    assert slow.worst_loading == pytest.approx(fast.worst_loading, rel=1e-8)
+
+
+###############################################################################
+# The tolerances of Section 3.6
+###############################################################################
+
+
+def test_the_tolerances_scale_with_the_fleet(net):
+    """They used to be absolute and to sit at the solver's own feasibility
+    tolerance, so a fleet-wide sum was tested against the slack the solver is
+    entitled to leave on one row of it.  On ACTIVSg2000 that decided three
+    weights of eighteen."""
+    assert postevent.shed_tolerance(net) == pytest.approx(
+        postevent.SHED_RTOL * net.load_pu)
+    assert postevent.shed_tolerance(net) > postevent.SHED_RTOL
+    assert postevent.tolerance(1e-6, 0.1) == pytest.approx(1e-6)
+
+
+def test_a_branch_only_event_never_reaches_the_surplus_guard(net, evaluator,
+                                                             nominal):
+    """Item 2.4.  A branch outage removes nothing from either side, so the
+    guard has no surplus to find and can only misfire -- which it did, taking
+    the whole branch class with it whenever the master's balance residual
+    landed on the far side of an absolute tolerance."""
+    pi = postevent.capacity_participation(net)
+    for count in _connected_branches(net):
+        item = Disfigurement(branches=frozenset({count}))
+        for gamma in (0.0, 0.5):
+            result = evaluator.evaluate(nominal, pi,
+                                        PostEventParams(gamma=gamma), item)
+            assert result.phase != "curtailed", (count, gamma)

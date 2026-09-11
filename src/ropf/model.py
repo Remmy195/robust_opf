@@ -1,21 +1,12 @@
-"""The AMPL boundary.
+"""The AMPL boundary: (M) and (M^ac), loaded from ``modfiles/``.
 
-Every optimization model in this study is an AMPL model file under
-``modfiles/``, and this is the only module that touches AMPL.  Keeping that
-boundary in one place is what makes the lifecycle rule below checkable by
-inspection rather than by discipline.
+AMPL LIFECYCLE RULE.  Never call ``ampl.close()`` and never drop the last
+reference to an entity object while a loop that will solve again is running;
+either can hang the process on the entity destructor rather than raising.  A
+`Master` holds its AMPL instance for its own lifetime and exposes no teardown.
 
-    AMPL LIFECYCLE RULE.  Never call ``ampl.close()``, and never drop the last
-    reference to an entity object (``ampl.get_variable("Pf")``), while a loop
-    that will solve again is still running.  Doing either can hang the process
-    on the entity destructor rather than raising.  A `Master` therefore holds
-    its AMPL instance for its own lifetime, resolves entities once in
-    ``__init__``, and exposes no teardown at all: the instance is released when
-    the `Master` is garbage collected, after the loop is over.
-
-The cut pool only ever grows.  A cut is appended, never replaced or removed, so
-the master stays a relaxation of the true functional at every iteration, which
-is what equation (11) of the manuscript rests on.
+The cut pool only ever grows, so the master stays a relaxation of the true
+functional at every iteration -- eq (11).
 """
 
 from __future__ import annotations
@@ -32,20 +23,19 @@ from .network import Network
 MODFILE_DIR = os.path.join(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))), "modfiles")
 
-#: Finite stand-in for a free bus angle.  The reference bus is pinned by
-#: collapsing its bounds to zero rather than by a constraint row.
+#: Finite stand-in for a free bus angle; the reference bus is pinned by
+#: collapsing its bounds rather than by a constraint row.
 ANGLE_LIMIT_RAD = 6.28318530718
 
-#: Manuscript risk functionals, mapped to the cut family that bounds them.
-#: `max_line_loading` and the apparent-power Joule variants that the earlier
-#: codebase carried are deliberately absent: they are not functionals in the
-#: paper, and supporting them meant carrying a fourth cut family with no
-#: consumer.
+#: Risk functional -> the cut family that bounds it.
 RISK_FAMILY = {
     "max_active_flow": 0,      # eq (4b), cut family (6a)
     "joule_loss_max": 1,       # eq (4c), cut family (6b)
     "bus_flow_sum_agg": 0,     # eq (4a), cut family (6c) -- see add_bus_cuts
 }
+
+#: Solvers whose AMPL driver can write the presolved problem to a file.
+LP_WRITERS = ("gurobi", "cplex", "xpress", "copt", "mosek")
 
 
 def _noop(_message: str) -> None:
@@ -59,44 +49,22 @@ def _noop(_message: str) -> None:
 
 @dataclass
 class SolverConfig:
-    """Which solver to call and under what budget.
-
-    Every limit is stated, never left to the solver's own default, so that a
-    solve which does not finish is a recorded outcome against a declared budget
-    rather than an unbounded run.
-    """
+    """Which solver to call and under what budget.  Every limit is stated, so a
+    solve that does not finish is a recorded outcome against a declared budget."""
 
     name: str = "gurobi"
     time_limit_s: float = 3600.0
     #: Gurobi LP method: primal, dual, barrier, concurrent, or auto.
     gurobi_method: Optional[str] = None
-    #: Crossover after barrier.  0 disables it and returns the interior point.
-    #: Rarely the right knob -- see `gurobi_threads`, which was the actual
-    #: cause of the slow (D) solves at the top rung.  Disabling crossover also
-    #: fixes those, but it changes what the answer IS: without crossover the
-    #: solution is an interior point, so where the LP has many optima the shed
-    #: is spread across them rather than concentrated at a vertex.  The total
-    #: shed and the cost are unaffected; a per-bus shed pattern is, and should
-    #: not then be read as THE pattern.
+    #: Crossover after barrier.  0 returns the interior point, which spreads
+    #: the answer across the optimal face rather than concentrating it at a
+    #: vertex: the total and the cost are unaffected, a per-bus pattern is not.
     gurobi_crossover: Optional[int] = None
-    #: Gurobi thread count.  None leaves it to the solver, which is NOT a safe
-    #: default on a hyperthreaded box.
-    #:
-    #: MEASURED, ACTIVSg70k, one (D) evaluation on a 2-socket box with 16
-    #: physical cores and 32 logical CPUs:
-    #:
-    #:     Gurobi default (32 threads)          64.7 s
-    #:     16 threads                           11.4 s
-    #:     32 threads, crossover off            10.6 s
-    #:
-    #: All three agree on lost load to nine significant figures and give an
-    #: identical objective, so this is 5.7x of wall clock for nothing.  Letting
-    #: the solver default means letting it take a thread per LOGICAL cpu, and
-    #: the second thread on a core has no second floating-point unit to run on;
-    #: the barrier ends up contending with itself across two NUMA nodes.  Set
-    #: this to the PHYSICAL core count.  It costs nothing at the small rungs
-    #: and is worth 5.7x at the top one.
+    #: Set this to the PHYSICAL core count.  Letting Gurobi default to a thread
+    #: per LOGICAL cpu cost 5.7x wall clock on ACTIVSg70k for the same answer.
     gurobi_threads: Optional[int] = None
+    gurobi_numericfocus: Optional[int] = None
+    gurobi_scaleflag: Optional[int] = None
     #: Knitro algorithm; 1 is interior-direct.
     knitro_algorithm: int = 1
     knitro_threads: int = 40
@@ -104,41 +72,53 @@ class SolverConfig:
     ipopt_tol: float = 1e-6
     verbose: bool = True
 
-    def apply(self, ampl: AMPL, log: Callable[[str], None]) -> None:
+    @property
+    def option_key(self) -> str:
+        return f"{self.name.lower()}_options"
+
+    @property
+    def writes_lp(self) -> bool:
+        return self.name.lower() in LP_WRITERS
+
+    def options(self) -> str:
+        """The solver option string for `name`, or "" where none is profiled."""
         name = self.name.lower()
-        ampl.setOption("solver", name)
         if name == "gurobi":
-            method_map = {"primal": 0, "simplex": 0, "dual": 1,
-                          "barrier": 2, "interior": 2, "ipm": 2,
-                          "concurrent": 3, "auto": None}
+            methods = {"primal": 0, "simplex": 0, "dual": 1, "barrier": 2,
+                       "interior": 2, "ipm": 2, "concurrent": 3, "auto": None}
             opts = []
-            code = method_map.get(str(self.gurobi_method).lower()) \
-                if self.gurobi_method else None
+            code = (methods.get(str(self.gurobi_method).lower())
+                    if self.gurobi_method else None)
             if code is not None:
                 opts.append(f"method={code}")
-            if self.gurobi_crossover is not None:
-                opts.append(f"crossover={self.gurobi_crossover}")
-            if self.gurobi_threads is not None:
-                opts.append(f"threads={self.gurobi_threads}")
+            for flag, value in (("crossover", self.gurobi_crossover),
+                                ("threads", self.gurobi_threads),
+                                ("numericfocus", self.gurobi_numericfocus),
+                                ("scale", self.gurobi_scaleflag)):
+                if value is not None:
+                    opts.append(f"{flag}={value}")
             opts.append(f"timelim={self.time_limit_s:g}")
             opts.append(f"outlev={1 if self.verbose else 0}")
-            ampl.setOption("gurobi_options", " ".join(opts))
-        elif name == "knitro":
+            return " ".join(opts)
+        if name == "knitro":
             opts = [f"algorithm={self.knitro_algorithm}",
                     f"numthreads={self.knitro_threads}",
                     "blasoptionlib=1", "linsolver=7",
                     f"maxtime_real={self.time_limit_s:g}"]
             if self.knitro_algorithm in (1, 6):
                 opts.insert(1, "bar_murule=1")
-            ampl.setOption("knitro_options", " ".join(opts))
-        elif name == "ipopt":
-            # The earlier codebase configured Gurobi and Knitro only, so IPOPT
-            # ran with no declared limits at all -- an AC solve that stalled
-            # simply never returned.  These three make the budget explicit.
-            ampl.setOption("ipopt_options",
-                           f"max_cpu_time={self.time_limit_s:g} "
-                           f"max_iter={self.ipopt_max_iter} "
-                           f"tol={self.ipopt_tol:g}")
+            return " ".join(opts)
+        if name == "ipopt":
+            return (f"max_cpu_time={self.time_limit_s:g} "
+                    f"max_iter={self.ipopt_max_iter} tol={self.ipopt_tol:g}")
+        return ""
+
+    def apply(self, ampl: AMPL, log: Callable[[str], None]) -> None:
+        name = self.name.lower()
+        ampl.setOption("solver", name)
+        options = self.options()
+        if options:
+            ampl.setOption(self.option_key, options)
         else:
             log(f" note: no option profile for solver '{name}'; using defaults\n")
         log(f" solver {name}, time limit {self.time_limit_s:g}s\n")
@@ -166,6 +146,8 @@ class Solution:
     v: Dict[int, float] = field(default_factory=dict)
     theta: Dict[int, float] = field(default_factory=dict)
     solve_time_s: float = 0.0
+    #: Where the LP of this solve was written, when LP output is on.
+    lp_path: Optional[str] = None
 
     @property
     def solved(self) -> bool:
@@ -174,16 +156,8 @@ class Solution:
 
 @dataclass(frozen=True)
 class BusCut:
-    """One instance of eq (6c), the bus family cut at a single bus.
-
-    ``branch_pos``/``branch_neg`` carry the incident lines split by the sign
-    they take at the incumbent; a line whose flow is zero there contributes
-    nothing and appears in neither.
-
-    There is no generation term and no demand term, because ``f_i`` has
-    neither: what a unit injects at the bus already leaves through these same
-    lines, and the demand is a constant of the case.  See `ropf.risk`.
-    """
+    """One instance of eq (6c): the incident lines at a bus, split by the sign
+    they take at the incumbent.  A line whose flow is zero appears in neither."""
 
     bus: int
     branch_pos: Sequence[int]
@@ -191,20 +165,14 @@ class BusCut:
 
     @property
     def key(self) -> tuple:
-        """What identifies this hyperplane, for the Section 3 exclusion.
-
-        The bus AND its sign pattern together: a repeated bus under a new sign
-        pattern is a different hyperplane and a genuinely new cut.  Keyed off
-        the cut rather than off the evaluation that produced it, so that the
-        pool's record of what it holds and the separation's record of what to
-        skip cannot drift apart -- there is one definition, and it is this one.
-        """
+        """The bus AND its sign pattern: a repeated bus under a new pattern is a
+        different hyperplane and a genuinely new cut."""
         return (self.bus,
                 tuple(sorted(self.branch_pos)), tuple(sorted(self.branch_neg)))
 
     @property
     def is_empty(self) -> bool:
-        """A cut with no terms reads ``Phi >= 0``, which the model already has."""
+        """A cut with no terms reads Phi >= 0, which the model already has."""
         return not (self.branch_pos or self.branch_neg)
 
 
@@ -216,8 +184,8 @@ class BusCut:
 class Master:
     """(M) or (M^ac), loaded with one network and solved repeatedly.
 
-    Construct once per run and call `solve` as many times as the loop needs.
-    `add_line_cuts` and `add_bus_cuts` append to the pool between solves.
+    Construct once per run, call `solve` as often as the loop needs, and append
+    to the pool with `add_line_cuts`/`add_bus_cuts` between solves.
     """
 
     def __init__(self,
@@ -229,12 +197,9 @@ class Master:
                  bus_cut_capacity: int = 0):
         """`*_cut_capacity` sizes the pool; the network's own size is the floor.
 
-        MAX_CUTS and MAX_BUS_CUTS index declared entities, so they are set once
-        here and never afterwards.  The line families cannot outgrow the network
-        -- the separation excludes branches already cut -- but the bus family
-        can: it excludes by bus AND sign pattern, so one bus may legitimately
-        carry several cuts and a long run can need more than `numbuses` of them.
-        The caller therefore states the budget it intends to spend.
+        MAX_CUTS and MAX_BUS_CUTS index declared entities and are set once here.
+        The bus family can outgrow the bus count -- one bus may carry several
+        sign patterns -- so the caller states the budget it intends to spend.
         """
         self.network = network
         self.log = log or _noop
@@ -261,6 +226,11 @@ class Master:
         self._line_cut_ids: List[int] = []
         self._bus_cuts: List[BusCut] = []
 
+        self._lp_dir: Optional[str] = None
+        self._lp_stem = "master"
+        #: The label the next LP file carries.  Algorithm 1 sets it to k.
+        self.lp_iteration = 0
+
         self._load_network()
 
     # -- construction ------------------------------------------------------
@@ -280,8 +250,6 @@ class Master:
         for count, bus in net.buses.items():
             Pd[count] = bus.Pd
             Gs[count] = bus.Gs
-            # The reference bus angle is pinned by collapsing its bounds rather
-            # than by a constraint row, so eq (1e)/(2i) costs no row.
             if count == net.refbus:
                 theta_min[count] = theta_max[count] = 0.0
             else:
@@ -308,9 +276,7 @@ class Master:
             bus_f[count] = br.id_f
             bus_t[count] = br.id_t
             U[count] = br.limit
-            # The nonnegative heat coefficient, not the raw series
-            # resistance.  See `Branch.r_heat`.
-            r[count] = br.r_heat
+            r[count] = br.r_heat          # the heat coefficient, not raw series r
             maxangle[count] = br.maxangle_rad
             minangle[count] = br.minangle_rad
             bdc[count] = br.bdc
@@ -349,16 +315,12 @@ class Master:
         Qmax, Qmin = {}, {}
         for count, gen in net.gens.items():
             # An out-of-service unit is held at zero rather than removed, so the
-            # generator index set matches the case file row for row.
+            # generator index set matches the case file row for row.  The
+            # no-load cost must be zeroed too: it is the only cost surviving
+            # Pg == 0, and MATPOWER drops offline units outright.
             Pmax[count] = gen.Pmax if gen.status else 0.0
             Pmin[count] = gen.Pmin if gen.status else 0.0
             quadcost[count], lincost[count], fixedcost[count] = gen.costvector
-            # The no-load term must be zeroed too, not just the bounds.  It is
-            # the only cost that survives Pg == 0, so leaving it in charges the
-            # system for units that are not running: on ACTIVSg200 that is 11
-            # units and $7,173.15 added to every reported cost.  MATPOWER drops
-            # offline units outright, which is what makes this visible as a
-            # constant offset against `rundcopf`.
             if not gen.status:
                 fixedcost[count] = 0.0
             if self.is_ac:
@@ -399,10 +361,42 @@ class Master:
 
     def set_risk_family(self, metric: str) -> None:
         if metric not in RISK_FAMILY:
-            raise ValueError(
-                f"unknown risk functional {metric!r}; "
-                f"expected one of {sorted(RISK_FAMILY)}")
+            raise ValueError(f"unknown risk functional {metric!r}; "
+                             f"expected one of {sorted(RISK_FAMILY)}")
         self.ampl.get_parameter("risk_family").set(RISK_FAMILY[metric])
+
+    # -- LP output ---------------------------------------------------------
+
+    def set_lp_output(self, directory: Optional[str],
+                      stem: str = "master") -> None:
+        """Write the problem of every subsequent solve to `directory`.
+
+        One file per solve, named ``<stem>_k<iteration>.lp`` from
+        `lp_iteration`, which Algorithm 1 sets to k.  The driver writes it as
+        part of the solve, so this costs no extra solve; it does cost the file.
+        Columns and rows carry solver-generated names -- AMPL's own entity
+        names are not exposed through the driver -- so the LP is for inspecting
+        the model's shape and size, and `ropf.risk.exposed` is what names the
+        components.
+        """
+        if directory and not self.solver.writes_lp:
+            self.log(f" note: solver '{self.solver.name}' cannot write an LP;"
+                     f" LP output is off\n")
+            self._lp_dir = None
+            return
+        self._lp_dir = directory
+        self._lp_stem = stem
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+            self.log(f" LP output on: {directory}"
+                     f"{os.sep}{stem}_k<iteration>.lp\n")
+
+    def lp_path(self) -> Optional[str]:
+        """Where the next solve would write its LP, or None when output is off."""
+        if not self._lp_dir:
+            return None
+        return os.path.join(self._lp_dir,
+                            f"{self._lp_stem}_k{self.lp_iteration:03d}.lp")
 
     # -- cuts --------------------------------------------------------------
 
@@ -420,11 +414,8 @@ class Master:
 
     @property
     def bus_cuts(self) -> List[BusCut]:
-        """The eq (6c) cuts this master holds, in the order they were added.
-
-        The pool is readable because Section 3.4 transfers it: the DC master's
-        pool is appended to the AC master unchanged.
-        """
+        """The eq (6c) cuts held, in the order added.  Readable because Section
+        3.4 transfers the DC pool to the AC master unchanged."""
         return list(self._bus_cuts)
 
     @property
@@ -451,11 +442,8 @@ class Master:
         return len(new)
 
     def add_bus_cuts(self, cuts: Sequence[BusCut]) -> int:
-        """Append eq (6c) cuts.  Returns how many were actually added.
-
-        A cut whose terms are all zero is skipped: it would read ``Phi >= 0``,
-        which the variable's own bound already imposes.
-        """
+        """Append eq (6c) cuts.  Returns how many were added; an empty cut is
+        skipped, since it would read Phi >= 0."""
         added = 0
         pos_br = self.ampl.getSet("bus_cut_br_pos")
         neg_br = self.ampl.getSet("bus_cut_br_neg")
@@ -471,10 +459,9 @@ class Master:
             if cut.is_empty:
                 continue
             self._n_bus_cuts += 1
-            k = self._n_bus_cuts
             self._bus_cuts.append(cut)
-            pos_br[k].setValues(list(cut.branch_pos))
-            neg_br[k].setValues(list(cut.branch_neg))
+            pos_br[self._n_bus_cuts].setValues(list(cut.branch_pos))
+            neg_br[self._n_bus_cuts].setValues(list(cut.branch_neg))
             added += 1
 
         if added:
@@ -484,6 +471,14 @@ class Master:
     # -- solving -----------------------------------------------------------
 
     def solve(self) -> Solution:
+        lp_path = self.lp_path()
+        options = self.solver.options()
+        if lp_path:
+            options = (f"{options} writeprob="
+                       f"{lp_path.replace(os.sep, '/')}").strip()
+        if options:
+            self.ampl.setOption(self.solver.option_key, options)
+
         t0 = time.time()
         self.ampl.solve()
         elapsed = time.time() - t0
@@ -493,15 +488,14 @@ class Master:
         phi = float(self.ampl.get_variable("Phi").value())
         weight = float(self.ampl.get_parameter("risk_weight").value())
         # The reported cost is the generation term alone; the objective carries
-        # lambda * Phi on top of it, and the two are not comparable across the
-        # weight grid.
+        # lambda * Phi on top and is not comparable across the weight grid.
         gen_cost = objective - weight * phi
 
-        Pg = self._values("Pg")
         Pf = self._values("Pf")
         solution = Solution(status=status, objective=objective,
                             gen_cost=gen_cost, phi=phi,
-                            Pg=Pg, Pf=Pf, solve_time_s=elapsed)
+                            Pg=self._values("Pg"), Pf=Pf,
+                            solve_time_s=elapsed, lp_path=lp_path)
         if self.is_ac:
             solution.Pt = self._values("Pt")
             solution.Qf = self._values("Qf")
@@ -509,13 +503,14 @@ class Master:
             solution.Qg = self._values("Qg")
             solution.v = self._values("v")
         else:
-            # Lossless DC: the to-end flow is not a variable, but downstream
-            # consumers expect it.  See modfiles/master.mod.
+            # Lossless DC: Pt is not a variable, but consumers expect it.
             solution.Pt = {k: -val for k, val in Pf.items()}
         solution.theta = self._values("theta")
 
         self.log(f" solve_result {status}, objective {objective:.6f},"
                  f" cost {gen_cost:.6f}, Phi {phi:.6f}, {elapsed:.1f}s\n")
+        if lp_path and os.path.exists(lp_path):
+            self.log(f" wrote LP {lp_path} ({os.path.getsize(lp_path)} bytes)\n")
         return solution
 
     def _values(self, name: str) -> Dict[int, float]:

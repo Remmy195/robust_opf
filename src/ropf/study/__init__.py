@@ -1,1 +1,1 @@
-"""The ladder study: six rungs, three functionals, three stages."""
+"""The ladder study: six instances, three functionals, three stages."""

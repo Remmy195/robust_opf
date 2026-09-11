@@ -60,11 +60,13 @@ def sweep():
 ###############################################################################
 
 
-def test_write_leaves_three_artifacts_and_no_others(tmp_path, net, sweep):
+def test_write_leaves_the_declared_artifacts_and_no_others(tmp_path, net, sweep):
     outdir = str(tmp_path / "run")
     results.write(outdir, net, RunConfig(case=CASE), sweep)
     assert sorted(os.listdir(outdir)) == sorted([
-        results.SOLUTION_SUMMARY, results.FRONTIER_CSV, results.FRONTIER_JSON])
+        results.SOLUTION_SUMMARY, results.FRONTIER_CSV, results.FRONTIER_JSON,
+        results.DISPATCH_BUS_CSV, results.DISPATCH_GEN_CSV,
+        results.DISPATCH_BRANCH_CSV])
 
 
 def test_the_csv_columns_are_the_declared_schema(tmp_path, net, sweep):

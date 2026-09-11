@@ -42,6 +42,82 @@ def test_no_flag_can_change_a_study_value():
         f"the solve command grew a flag: {sorted(flags)}"
 
 
+def test_score_takes_the_same_flags_as_ladder_and_no_more():
+    """`ropf score` is `ropf ladder` without Algorithm 1, and the flag set says
+    so: neither `frontier_dir` nor anything else about what is scored is
+    reachable from the command line."""
+    parser = cli._parser()
+    choices = parser._subparsers._group_actions[0].choices
+    def flags(name):
+        return {a.dest for a in choices[name]._actions} - {"help"}
+    assert flags("score") == flags("ladder") == {
+        "config", "all", "status", "dry_run", "reclaim", "quiet"}
+
+
+def test_score_dry_run_reads_the_overheads_and_solves_nothing(tmp_path, capsys):
+    """The overheads are the reason the command exists and they live in the
+    source tree, so --dry-run reads them.  It writes nothing."""
+    source = tmp_path / "trees" / "ACTIVSg200_max_active_flow_baseline_frontier"
+    _frontier_tree(source)
+    config = tmp_path / "score.conf"
+    config.write_text(
+        f"frontier_dir = {tmp_path / 'trees'}\n"
+        f"instances = activs200\nmetrics = max_active_flow\n"
+        f"stages = baseline\ngamma = 0\ndamping_per_load = 1.0\n"
+        f"outdir = {tmp_path / 'out'}\n")
+
+    assert cli.main(["score", str(config), "--dry-run"]) == 0
+    printed = capsys.readouterr().out
+    assert "read-only" in printed
+    assert "0.00, 2.00" in printed, printed
+    assert not os.path.exists(tmp_path / "out"), "a dry run wrote an output tree"
+    assert sorted(os.listdir(source)) == [
+        "dispatch_gen.csv", "efficient_frontier.csv", "solution_summary.json"]
+
+
+def test_score_dry_run_names_a_combo_with_no_frontier(tmp_path, capsys):
+    """A combo whose source tree is absent is reported and the command fails,
+    rather than the campaign silently covering eight of nine cells."""
+    (tmp_path / "trees").mkdir()
+    config = tmp_path / "score.conf"
+    config.write_text(
+        f"frontier_dir = {tmp_path / 'trees'}\n"
+        f"instances = activs200\nmetrics = max_active_flow\n"
+        f"stages = baseline\ngamma = 0\ndamping_per_load = 1.0\n"
+        f"outdir = {tmp_path / 'out'}\n")
+    assert cli.main(["score", str(config), "--dry-run"]) == 1
+    assert "no frontier to score" in capsys.readouterr().out
+
+
+def _frontier_tree(directory):
+    """The three artifacts `read_frontier` reads, at two weights."""
+    import csv
+    import json
+    directory.mkdir(parents=True)
+    runs, rows, gens = [], [], []
+    for multiplier, cost in ((0.0, 100.0), (1.0, 102.0)):
+        runs.append({"metric": "max_active_flow", "stage": "baseline",
+                     "weight_multiplier": multiplier, "risk_weight": multiplier,
+                     "lambda_star": 1.0, "z0": 100.0, "rho0": 1.0, "phi0": 1.0,
+                     "termination": "zero_weight" if not multiplier else
+                                    "eta_target",
+                     "dispatch": {"Pg_pu": {"1": 1.0 + multiplier},
+                                  "objective": cost, "gen_cost": cost,
+                                  "status": "solved"}})
+        rows.append({"weight_multiplier": multiplier, "cost": cost,
+                     "risk": 1.0, "cost_ratio": cost / 100.0})
+        gens.append({"weight_multiplier": multiplier, "gen": 1,
+                     "Pg_pu": repr(1.0 + multiplier)})
+    (directory / "solution_summary.json").write_text(
+        json.dumps({"provenance": {}, "runs": runs}))
+    for name, table in (("efficient_frontier.csv", rows),
+                        ("dispatch_gen.csv", gens)):
+        with open(directory / name, "w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(table[0]))
+            writer.writeheader()
+            writer.writerows(table)
+
+
 def test_dry_run_reports_the_effective_config_and_solves_nothing(tmp_path, capsys):
     config = tmp_path / "run.conf"
     config.write_text(f"case = {CASE}\nmetric = joule_loss_max\n"
@@ -71,11 +147,11 @@ def test_the_output_directory_names_the_run():
                        stage="a2", outdir="results")
     assert cli._output_dir(config) == \
         os.path.join("results", "case_ACTIVSg2000_joule_loss_max_a2")
-    assert cli._output_dir(RunConfig(case="x.m", tag="rung3")) == \
-        os.path.join("results", "rung3")
+    assert cli._output_dir(RunConfig(case="x.m", tag="instance3")) == \
+        os.path.join("results", "instance3")
 
 
-def test_solve_writes_the_three_artifacts(tmp_path):
+def test_solve_writes_the_declared_artifacts(tmp_path):
     pytest.importorskip("amplpy", reason="AMPL is not installed")
     from ropf import results
 
@@ -92,4 +168,6 @@ def test_solve_writes_the_three_artifacts(tmp_path):
 
     written = sorted(os.listdir(outdir / "smoke"))
     assert written == sorted([results.SOLUTION_SUMMARY, results.FRONTIER_CSV,
-                              results.FRONTIER_JSON, cli.TRANSCRIPT])
+                              results.FRONTIER_JSON, results.DISPATCH_BUS_CSV,
+                              results.DISPATCH_GEN_CSV,
+                              results.DISPATCH_BRANCH_CSV, cli.TRANSCRIPT])
