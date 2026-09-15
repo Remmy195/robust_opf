@@ -20,11 +20,8 @@ from .network import Network
 METRICS = ("max_active_flow", "joule_loss_max", "bus_flow_sum_agg")
 
 #: Component sets a risk functional may be maximized over.  "rated" drops
-#: branches with no rateA -- on the large ACTIVSg systems, zero-length bus
-#: ties -- from the line functionals' own maximum (eq 4b, 4c), and from each
-#: bus's incident sum for the bus functional (eq 4a); a bus left with no
-#: rated incident branch then has no rated sum to report and drops out of
-#: that maximum too, rather than attaining it at zero.
+#: branches with no rateA (ACTIVSg's zero-length bus ties); a bus left with
+#: none also drops from the bus functional's max, rather than scoring zero.
 FLOW_DOMAINS = ("all", "rated")
 
 #: Below this magnitude a flow contributes no term to a cut.  Zero is a valid
@@ -123,18 +120,13 @@ def _evaluate_joule(network: Network, Pf: Dict[int, float],
 
 def _evaluate_bus(network: Network, Pf: Dict[int, float],
                   flow_domain: str = "all") -> RiskEval:
-    """eq (4a), maximized over `flow_domain`.  Every incident line contributes
-    its own from-end flow, so both endpoints accumulate |Pf| and neither uses
-    Pt.
+    """eq (4a) over `flow_domain`.  Every incident line contributes its own
+    from-end flow, so both endpoints accumulate |Pf| and neither uses Pt.
 
-    A bus carries no rating of its own, so `flow_domain` cannot filter the
-    outer max's candidates the way it does for the line functionals; instead
-    it restricts the SUM each candidate bus is built from, to its rated
-    incident branches alone.  A bus left with none has no rated sum to
-    report, not a sum of zero, so it drops out of the candidate set entirely
-    -- `study/domain_scan.py`'s free cross-evaluation established this
-    reading first, and this reproduces it exactly, including its bus-count
-    tie-break order.
+    A bus has no rating of its own, so `flow_domain` restricts the incident
+    sum each candidate is built from, not the candidate set directly; a bus
+    left with no rated incident branch drops out entirely rather than
+    summing to zero (matches `study/domain_scan.py`).
     """
     raw_f: Dict[int, float] = {}
     raw_incidence: Dict[int, List[int]] = {}

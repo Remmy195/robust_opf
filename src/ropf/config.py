@@ -57,10 +57,8 @@ class RunConfig:
     #: One of `ropf.algorithm.STAGES`.
     stage: str = "baseline"
     #: One of `ropf.risk.FLOW_DOMAINS`: the component set the active risk
-    #: functional is maximized over.  It restricts the surrogate ALONE -- the
-    #: case file is not edited and the branches keep their flows and their
-    #: eq (1d) limit.  See `ropf.risk.FLOW_DOMAINS` for how the restriction
-    #: reads on the bus functional, which carries no rating of its own.
+    #: functional is maximized over.  Restricts the surrogate ALONE -- the
+    #: case file and eq (1d) limits are untouched.
     flow_domain: str = "all"
 
     # --- Algorithm 1 ---------------------------------------------------------

@@ -213,14 +213,9 @@ def test_rated_domain_drops_the_unrated_attaining_branches(net, dispatch,
 
 def test_rated_domain_drops_a_bus_left_with_no_rated_incident_branch(
         net, dispatch):
-    """The bus functional restricts the SUM a candidate is built from, not the
-    outer max's candidates directly, since a bus carries no rating of its own.
-
-    Marking ALL of one bus's incident branches unrated must drop that bus from
+    """Marking every incident branch of a bus unrated must drop that bus from
     the component set entirely -- it has no rated sum to report, not a sum of
-    zero -- the same reading `study/domain_scan.py` uses for its free
-    cross-evaluation.
-    """
+    zero.  Matches `study/domain_scan.py`."""
     Pf, _ = dispatch
     everything = risk.evaluate("bus_flow_sum_agg", net, Pf, "all")
     bus = max(everything.incidence, key=lambda b: len(everything.incidence[b]))
@@ -236,9 +231,8 @@ def test_rated_domain_drops_a_bus_left_with_no_rated_incident_branch(
         for c, value in kept.items():
             net.branches[c].constrainedflow = value
 
-    # Zeroing every incident branch of `bus` can also drop a NEIGHBOR for
-    # which one of those same branches was its own only rated line, so the
-    # count falls by at least one, not by exactly one.
+    # A neighbor can also lose its only rated line here, so the count falls
+    # by at least one, not exactly one.
     assert bus not in rated.components
     assert bus not in rated.incidence
     assert len(rated.components) < len(everything.components)
