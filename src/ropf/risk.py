@@ -19,8 +19,12 @@ from .network import Network
 
 METRICS = ("max_active_flow", "joule_loss_max", "bus_flow_sum_agg")
 
-#: Component sets eq (10a) may be maximized over.  "rated" drops branches with
-#: no rateA, which on the large ACTIVSg systems are zero-length bus ties.
+#: Component sets a risk functional may be maximized over.  "rated" drops
+#: branches with no rateA -- on the large ACTIVSg systems, zero-length bus
+#: ties -- from the line functionals' own maximum (eq 4b, 4c), and from each
+#: bus's incident sum for the bus functional (eq 4a); a bus left with no
+#: rated incident branch then has no rated sum to report and drops out of
+#: that maximum too, rather than attaining it at zero.
 FLOW_DOMAINS = ("all", "rated")
 
 #: Below this magnitude a flow contributes no term to a cut.  Zero is a valid
@@ -84,16 +88,12 @@ def evaluate(metric: str,
     if flow_domain not in FLOW_DOMAINS:
         raise ValueError(f"unknown flow domain {flow_domain!r}; "
                          f"expected one of {list(FLOW_DOMAINS)}")
-    if flow_domain != "all" and metric != "max_active_flow":
-        raise ValueError(f"flow_domain = {flow_domain!r} applies to "
-                         f"max_active_flow; {metric!r} ranges over a different "
-                         f"component set and would ignore it")
 
     if metric == "max_active_flow":
         return _evaluate_flow(network, Pf, flow_domain)
     if metric == "joule_loss_max":
-        return _evaluate_joule(network, Pf)
-    return _evaluate_bus(network, Pf)
+        return _evaluate_joule(network, Pf, flow_domain)
+    return _evaluate_bus(network, Pf, flow_domain)
 
 
 def _evaluate_flow(network: Network, Pf: Dict[int, float],
@@ -106,31 +106,59 @@ def _evaluate_flow(network: Network, Pf: Dict[int, float],
                     components)
 
 
-def _evaluate_joule(network: Network, Pf: Dict[int, float]) -> RiskEval:
-    """eq (4c).  Uses `Branch.r_heat`, as cut family (6b) does; a surrogate and
-    a functional built on different coefficients would break eq (11)."""
+def _evaluate_joule(network: Network, Pf: Dict[int, float],
+                    flow_domain: str = "all") -> RiskEval:
+    """eq (4c), maximized over `flow_domain`.  Uses `Branch.r_heat`, as cut
+    family (6b) does; a surrogate and a functional built on different
+    coefficients would break eq (11)."""
     components = {}
     for count, branch in network.branches.items():
+        if flow_domain != "all" and not branch.constrainedflow:
+            continue
         flow = float(Pf.get(count, 0.0))
         components[count] = branch.r_heat * flow * flow
     return RiskEval("joule_loss_max", max(components.values(), default=0.0),
                     components)
 
 
-def _evaluate_bus(network: Network, Pf: Dict[int, float]) -> RiskEval:
-    """eq (4a).  Every incident line contributes its own from-end flow, so both
-    endpoints accumulate |Pf| and neither uses Pt."""
-    f_bus: Dict[int, float] = {count: 0.0 for count in network.buses}
-    incidence: Dict[int, List[int]] = {count: [] for count in network.buses}
+def _evaluate_bus(network: Network, Pf: Dict[int, float],
+                  flow_domain: str = "all") -> RiskEval:
+    """eq (4a), maximized over `flow_domain`.  Every incident line contributes
+    its own from-end flow, so both endpoints accumulate |Pf| and neither uses
+    Pt.
+
+    A bus carries no rating of its own, so `flow_domain` cannot filter the
+    outer max's candidates the way it does for the line functionals; instead
+    it restricts the SUM each candidate bus is built from, to its rated
+    incident branches alone.  A bus left with none has no rated sum to
+    report, not a sum of zero, so it drops out of the candidate set entirely
+    -- `study/domain_scan.py`'s free cross-evaluation established this
+    reading first, and this reproduces it exactly, including its bus-count
+    tie-break order.
+    """
+    raw_f: Dict[int, float] = {}
+    raw_incidence: Dict[int, List[int]] = {}
     branch_sign: Dict[int, int] = {}
 
     for count, branch in network.branches.items():
         flow = float(Pf.get(count, 0.0))
         branch_sign[count] = _sign(flow)
+        if flow_domain != "all" and not branch.constrainedflow:
+            continue
         magnitude = abs(flow)
         for endpoint in (branch.id_f, branch.id_t):
-            f_bus[endpoint] += magnitude
-            incidence[endpoint].append(count)
+            raw_f[endpoint] = raw_f.get(endpoint, 0.0) + magnitude
+            raw_incidence.setdefault(endpoint, []).append(count)
+
+    if flow_domain == "all":
+        f_bus = {count: raw_f.get(count, 0.0) for count in network.buses}
+        incidence = {count: raw_incidence.get(count, [])
+                    for count in network.buses}
+    else:
+        f_bus = {count: raw_f[count] for count in network.buses
+                 if count in raw_f}
+        incidence = {count: raw_incidence[count] for count in network.buses
+                    if count in raw_f}
 
     return RiskEval("bus_flow_sum_agg", max(f_bus.values(), default=0.0), f_bus,
                     incidence=incidence, branch_sign=branch_sign)

@@ -162,18 +162,23 @@ def test_a_degree_two_bus_carries_twice_its_flow(net, dispatch):
 ###############################################################################
 
 
-def test_rated_domain_is_a_no_op_where_every_branch_is_rated(net, dispatch):
+@pytest.mark.parametrize("metric", risk.METRICS)
+def test_rated_domain_is_a_no_op_where_every_branch_is_rated(net, dispatch,
+                                                              metric):
     """ACTIVSg200 rates all 245 of its branches, so the restriction removes
-    nothing and must not perturb the value or the component set."""
+    nothing and must not perturb the value or the component set, for any of
+    the three functionals."""
     Pf, _ = dispatch
     assert net.unconstrained_branches() == []
-    everything = risk.evaluate("max_active_flow", net, Pf, "all")
-    rated = risk.evaluate("max_active_flow", net, Pf, "rated")
+    everything = risk.evaluate(metric, net, Pf, "all")
+    rated = risk.evaluate(metric, net, Pf, "rated")
     assert rated.value == pytest.approx(everything.value)
     assert rated.components == everything.components
 
 
-def test_rated_domain_drops_the_unrated_attaining_branches(net, dispatch):
+@pytest.mark.parametrize("metric", ["max_active_flow", "joule_loss_max"])
+def test_rated_domain_drops_the_unrated_attaining_branches(net, dispatch,
+                                                            metric):
     """With every attaining branch marked unrated, the maximum falls to the
     largest of the rest and those branches leave the component set entirely.
 
@@ -185,7 +190,7 @@ def test_rated_domain_drops_the_unrated_attaining_branches(net, dispatch):
     leave the value where it was and prove nothing.
     """
     Pf, _ = dispatch
-    everything = risk.evaluate("max_active_flow", net, Pf, "all")
+    everything = risk.evaluate(metric, net, Pf, "all")
     attaining = [c for c, v in everything.components.items()
                  if v == pytest.approx(everything.value)]
     runner_up = max(v for c, v in everything.components.items()
@@ -195,7 +200,7 @@ def test_rated_domain_drops_the_unrated_attaining_branches(net, dispatch):
     for c in attaining:
         net.branches[c].constrainedflow = 0
     try:
-        rated = risk.evaluate("max_active_flow", net, Pf, "rated")
+        rated = risk.evaluate(metric, net, Pf, "rated")
     finally:
         for c, value in kept.items():
             net.branches[c].constrainedflow = value
@@ -206,21 +211,44 @@ def test_rated_domain_drops_the_unrated_attaining_branches(net, dispatch):
     assert rated.value < everything.value
 
 
+def test_rated_domain_drops_a_bus_left_with_no_rated_incident_branch(
+        net, dispatch):
+    """The bus functional restricts the SUM a candidate is built from, not the
+    outer max's candidates directly, since a bus carries no rating of its own.
+
+    Marking ALL of one bus's incident branches unrated must drop that bus from
+    the component set entirely -- it has no rated sum to report, not a sum of
+    zero -- the same reading `study/domain_scan.py` uses for its free
+    cross-evaluation.
+    """
+    Pf, _ = dispatch
+    everything = risk.evaluate("bus_flow_sum_agg", net, Pf, "all")
+    bus = max(everything.incidence, key=lambda b: len(everything.incidence[b]))
+    incident = everything.incidence[bus]
+    assert incident, "need a bus with at least one incident branch"
+
+    kept = {c: net.branches[c].constrainedflow for c in incident}
+    for c in incident:
+        net.branches[c].constrainedflow = 0
+    try:
+        rated = risk.evaluate("bus_flow_sum_agg", net, Pf, "rated")
+    finally:
+        for c, value in kept.items():
+            net.branches[c].constrainedflow = value
+
+    # Zeroing every incident branch of `bus` can also drop a NEIGHBOR for
+    # which one of those same branches was its own only rated line, so the
+    # count falls by at least one, not by exactly one.
+    assert bus not in rated.components
+    assert bus not in rated.incidence
+    assert len(rated.components) < len(everything.components)
+
+
 def test_unknown_flow_domain_is_an_error(net, dispatch):
     Pf, _ = dispatch
     with pytest.raises(ValueError) as exc:
         risk.evaluate("max_active_flow", net, Pf, "rateA")
     assert "unknown flow domain" in str(exc.value)
-
-
-@pytest.mark.parametrize("metric", ["joule_loss_max", "bus_flow_sum_agg"])
-def test_a_restricted_domain_refuses_the_other_functionals(net, dispatch, metric):
-    """Silently ignoring it would report the unrestricted quantity under a name
-    saying the domain was restricted."""
-    Pf, _ = dispatch
-    with pytest.raises(ValueError) as exc:
-        risk.evaluate(metric, net, Pf, "rated")
-    assert "max_active_flow" in str(exc.value)
 
 ###############################################################################
 # Cuts, eq (6c)

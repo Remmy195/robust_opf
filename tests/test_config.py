@@ -187,14 +187,13 @@ def test_an_unknown_flow_domain_is_an_error(tmp_path):
     assert "flow_domain" in str(exc.value)
 
 
-def test_flow_domain_refuses_the_other_functionals(tmp_path):
-    """The restriction applies to the maximum over lines.  Pairing it with a
-    functional that does not read it would name a restriction the reported
-    number does not carry."""
-    with pytest.raises(ConfigError) as exc:
-        read_config(write(tmp_path,
-                          "metric = joule_loss_max\nflow_domain = rated\n"))
-    assert "max_active_flow" in str(exc.value)
+@pytest.mark.parametrize("metric", ["joule_loss_max", "bus_flow_sum_agg"])
+def test_flow_domain_reaches_the_algorithm_for_every_metric(tmp_path, metric):
+    """`ropf.risk` restricts all three functionals, not max_active_flow alone,
+    so pairing flow_domain = rated with another metric is not a config error."""
+    config = read_config(write(tmp_path,
+                               f"metric = {metric}\nflow_domain = rated\n"))
+    assert config.algorithm_config().flow_domain == "rated"
 
 
 def test_the_grid_is_swept_when_no_absolute_lambda_is_given():

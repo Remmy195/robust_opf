@@ -194,9 +194,9 @@ def _report_config(config: RunConfig, outdir: str, emit) -> None:
     emit(f"\n case          {config.case}\n")
     emit(f" metric        {config.metric}\n")
     if config.flow_domain != "all":
-        emit(f" flow_domain   {config.flow_domain}   (the maximum in eq (4b) "
-             f"runs over this component set; the model files, the feasible set "
-             f"and eq (1d) are untouched)\n")
+        emit(f" flow_domain   {config.flow_domain}   ({config.metric}'s "
+             f"maximum runs over this component set; the model files, the "
+             f"feasible set and eq (1d) are untouched)\n")
     emit(f" stage         {config.stage}\n")
     emit(f" weights       {', '.join(f'{w:g}' for w in config.weights)}"
          f" x lambda*\n")

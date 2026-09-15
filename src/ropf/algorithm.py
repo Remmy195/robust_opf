@@ -104,8 +104,8 @@ class AlgorithmConfig:
 
     metric: str = "max_active_flow"
     stage: str = "baseline"
-    #: The component set eq (10a) is maximized over, `risk.FLOW_DOMAINS`.
-    #: Meaningful for max_active_flow alone.
+    #: The component set the active risk functional is maximized over,
+    #: `risk.FLOW_DOMAINS`.
     flow_domain: str = "all"
     #: The grid point: lambda = weight_multiplier * lambda*.
     weight_multiplier: float = 1.0
@@ -136,10 +136,6 @@ class AlgorithmConfig:
         if self.flow_domain not in risk.FLOW_DOMAINS:
             raise ValueError(f"unknown flow domain {self.flow_domain!r}; "
                              f"expected one of {list(risk.FLOW_DOMAINS)}")
-        if self.flow_domain != "all" and self.metric != "max_active_flow":
-            raise ValueError(f"flow_domain = {self.flow_domain!r} applies to "
-                             f"max_active_flow; {self.metric!r} ranges over a "
-                             f"different component set and would ignore it")
         if self.kappa < 1:
             raise ValueError(f"kappa must be at least 1, got {self.kappa}")
         if not 0.0 < self.eta < 1.0:

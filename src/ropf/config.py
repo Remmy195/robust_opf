@@ -56,10 +56,11 @@ class RunConfig:
     metric: str = "max_active_flow"
     #: One of `ropf.algorithm.STAGES`.
     stage: str = "baseline"
-    #: One of `ropf.risk.FLOW_DOMAINS`: the component set eq (10a) is maximized
-    #: over.  It restricts the surrogate ALONE -- the case file is not edited
-    #: and the branches keep their flows and their eq (1d) limit.
-    #: max_active_flow only.
+    #: One of `ropf.risk.FLOW_DOMAINS`: the component set the active risk
+    #: functional is maximized over.  It restricts the surrogate ALONE -- the
+    #: case file is not edited and the branches keep their flows and their
+    #: eq (1d) limit.  See `ropf.risk.FLOW_DOMAINS` for how the restriction
+    #: reads on the bus functional, which carries no rating of its own.
     flow_domain: str = "all"
 
     # --- Algorithm 1 ---------------------------------------------------------
@@ -157,12 +158,6 @@ class RunConfig:
         if self.flow_domain not in FLOW_DOMAINS:
             raise ConfigError(f"flow_domain = {self.flow_domain!r} is not one "
                               f"of {list(FLOW_DOMAINS)}")
-        if self.flow_domain != "all" and self.metric != "max_active_flow":
-            raise ConfigError(
-                f"flow_domain = {self.flow_domain!r} restricts the maximum in "
-                f"eq (10a) and applies to metric = 'max_active_flow'; "
-                f"{self.metric!r} ranges over a different component set and "
-                f"would ignore it")
         if not self.weight_grid:
             raise ConfigError("weight_grid is empty; there is nothing to solve")
         if any(w < 0 for w in self.weight_grid):
