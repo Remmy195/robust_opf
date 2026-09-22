@@ -116,7 +116,9 @@ def run(network: Network,
         config: AlgorithmConfig,
         solver: Optional[SolverConfig] = None,
         ac_solver: Optional[SolverConfig] = None,
-        log: Optional[Callable[[str], None]] = None) -> Result:
+        log: Optional[Callable[[str], None]] = None,
+        lp_dir: Optional[str] = None) -> Result:
+    """`lp_dir` writes each master solve there as an LP file."""
     emit = log or _noop
     started = time.time()
     emit(f"\n{config.stage}: {config.metric} (q = {config.q}), "
@@ -125,12 +127,13 @@ def run(network: Network,
 
     budget = config.kappa * config.k_bar
     master = Master(network, DC_MODFILE, solver or SolverConfig(), emit,
-                    line_cut_capacity=budget, bus_cut_capacity=budget)
+                    line_cut_capacity=budget, bus_cut_capacity=budget,
+                    lp_dir=lp_dir)
     result = run_loop(network, master, config, emit)
 
     if config.stage == "a2" and result.termination != "infeasible":
         run_ac_stage(network, master, result, config,
-                     ac_solver or SolverConfig(name="knitro"), emit)
+                     ac_solver or SolverConfig(name="knitro"), emit, lp_dir)
 
     result.total_time_s = time.time() - started
     emit(f"{result.termination}: {result.termination_detail}"
@@ -262,14 +265,16 @@ def run_ac_stage(network: Network,
                  result: Result,
                  config: AlgorithmConfig,
                  solver: SolverConfig,
-                 log: Optional[Callable[[str], None]] = None) -> Iterate:
+                 log: Optional[Callable[[str], None]] = None,
+                 lp_dir: Optional[str] = None) -> Iterate:
     """Append the DC pool to (M^ac) and solve once; with an empty pool this is the AC-OPF."""
     emit = log or _noop
     emit(f"AC stage  {dc_master.n_line_cuts} line + {dc_master.n_bus_cuts}"
          f" bus cuts to (M^ac)\n")
     ac = Master(network, AC_MODFILE, solver, emit,
                 line_cut_capacity=max(1, dc_master.n_line_cuts),
-                bus_cut_capacity=max(1, dc_master.n_bus_cuts))
+                bus_cut_capacity=max(1, dc_master.n_bus_cuts),
+                lp_dir=lp_dir)
     ac.set_risk_family(config.metric)
     ac.set_risk_weight(result.risk_weight)
     ac.add_line_cuts(dc_master.line_cut_ids)

@@ -42,6 +42,7 @@ class RunConfig:
     time_limit_s: float = 3600.0
     threads: Optional[int] = None
     solver_verbose: bool = False
+    write_lp: bool = False
     outdir: str = ""
 
     def __post_init__(self) -> None:

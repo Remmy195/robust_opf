@@ -19,6 +19,10 @@ ANGLE_LIMIT_RAD = 6.28318530718
 # Exposure representation -> risk_family in the model; bus cuts have their own block.
 RISK_FAMILY = {"max_active_flow": 0, "joule_loss_max": 1, "bus_flow_sum_agg": 0}
 
+#: Drivers taking `writeprob=<file>`.  The ASL-based ones (knitro, ipopt) have
+#: no equivalent, and an LP of the nonlinear (M^ac) would not mean anything.
+LP_WRITERS = ("gurobi", "highs", "cplex", "copt", "xpress", "mosek", "cbc")
+
 
 def _noop(_message: str) -> None:
     return None
@@ -131,12 +135,15 @@ class Master:
                  solver: Optional[SolverConfig] = None,
                  log: Optional[Callable[[str], None]] = None,
                  line_cut_capacity: int = 0,
-                 bus_cut_capacity: int = 0):
+                 bus_cut_capacity: int = 0,
+                 lp_dir: Optional[str] = None):
         self.network = network
         self.log = log or _noop
         self.solver = solver or SolverConfig()
         self.modfile = modfile
         self.is_ac = os.path.basename(modfile).endswith("_ac.mod")
+        self.lp_dir = lp_dir
+        self._solves = 0
         self.line_cut_capacity = max(1, network.numbranches, int(line_cut_capacity))
         self.bus_cut_capacity = max(1, network.numbuses, int(bus_cut_capacity))
 
@@ -155,6 +162,13 @@ class Master:
         version = self.ampl.get_option("version").splitlines()[0]
         self.log(f"{os.path.basename(path)}: {version}, {self.solver.name}"
                  f" '{self.solver.option_string()}'\n")
+        if self.lp_dir and not self.writes_lp:
+            self.log(f"{self.solver.name} has no LP writer: no LP file written\n")
+            self.lp_dir = None
+        if self.lp_dir:
+            os.makedirs(self.lp_dir, exist_ok=True)
+            # Only the solver-specific auxfiles option puts real names in the LP.
+            self.ampl.eval(f"option {self.solver.name.lower()}_auxfiles rc;")
 
         self._line_cut_ids: List[int] = []
         self._bus_cuts: List[BusCut] = []
@@ -300,7 +314,25 @@ class Master:
             self.ampl.get_parameter("nBUSCUT").set(self.n_bus_cuts)
         return len(cuts)
 
+    @property
+    def writes_lp(self) -> bool:
+        return self.solver.name.lower() in LP_WRITERS
+
+    def _write_lp_next_solve(self) -> Optional[str]:
+        """This solve's LP file, one per solve, numbered in solve order."""
+        if not self.lp_dir:
+            return None
+        stem = os.path.splitext(os.path.basename(self.modfile))[0]
+        path = os.path.join(self.lp_dir, f"{stem}_{self._solves:03d}.lp")
+        # The options string splits on spaces.
+        quoted = f"'{path}'" if " " in path else path
+        self.ampl.setOption(f"{self.solver.name.lower()}_options",
+                            f"{self.solver.option_string()} writeprob={quoted}".strip())
+        return path
+
     def solve(self) -> Solution:
+        self._solves += 1
+        lp_path = self._write_lp_next_solve()
         t0 = time.time()
         self.ampl.solve()
         elapsed = time.time() - t0
@@ -319,6 +351,8 @@ class Master:
                 setattr(solution, name, self._values(name))
         self.log(f" {status}, cost {solution.gen_cost:.6f}, Phi {phi:.6f},"
                  f" {elapsed:.1f}s\n")
+        if lp_path:
+            self.log(f" LP {os.path.basename(lp_path)}\n")
         return solution
 
     def _values(self, name: str) -> Dict[int, float]:

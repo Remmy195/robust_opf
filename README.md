@@ -44,6 +44,7 @@ repeated keys are errors.
 | `time_limit_s` | `3600` | per solve |
 | `threads` | solver default | |
 | `solver_verbose` | `false` | |
+| `write_lp` | `false` | write each master solve to `lp/` as an LP file; needs a driver with an LP writer, which the AC solvers are not |
 | `outdir` | | output directory |
 
 ## Python
@@ -56,7 +57,30 @@ result = run(net, AlgorithmConfig(metric="joule_loss_max", kappa=5, eta=0.85))
 result.final.rho, result.dispatch.Pg
 ```
 
-Sweeping `weight_multiplier` traces the cost-exposure frontier.
+Sweeping `weight_multiplier` traces the cost-exposure frontier; see below.
+
+## Analysis
+
+`analysis/frontier.py` traces the cost-exposure frontier, running Algorithm 1
+once per exposure weight. Its settings are constants at the top of the file --
+the same keys as a config, plus the weights to trace -- so a frontier is edited
+and run, with no config file and no arguments:
+
+```bash
+python analysis/frontier.py
+```
+
+Writes `frontier.csv`, `frontier.json`, `frontier.png` and `run.log` to
+`results/<case>_<metric>_<stage>_frontier/`. The plot needs matplotlib, which
+`ropf` itself does not.
+
+`analysis/xeval.py` cross-evaluates the representations: it solves under each
+one at a single weight, then scores every resulting dispatch -- and the plain
+OPF -- under all of them. The solves are the whole cost, since scoring a
+representation on a dispatch is arithmetic on Pf. Read the matrix by column: the
+lowest entry should be the diagonal, and an off-diagonal entry above 1 means
+de-risking under one representation raised what another names. Writes
+`xeval.csv`, `xeval.json`, `xeval.png` and `run.log` to `results/<case>_xeval/`.
 
 ## Data
 

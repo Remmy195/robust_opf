@@ -76,7 +76,8 @@ def solve(path: str, echo: bool = True) -> int:
         meta = metadata(path, network, outdir)
         log_header(log, meta, config)
         result = algorithm.run(network, config.algorithm_config(),
-                               config.dc_solver(), config.ac_solver(), log)
+                               config.dc_solver(), config.ac_solver(), log,
+                               os.path.join(outdir, "lp") if config.write_lp else None)
         meta["finished"] = _now()
         meta["wall_s"] = round(time.time() - started, 3)
         meta["solver_s"] = round(sum(it.solve_time_s for it in result.iterations)
