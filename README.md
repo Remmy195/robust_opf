@@ -22,7 +22,8 @@ pip install -e ".[dev]"
 ropf configs/risk_aware.conf
 ```
 
-Writes `result.json` (config, iterates, dispatch) and `run.log` to
+Writes `result.json` (config, iterates, dispatch), `result.csv` (iterates),
+`dispatch_bus.csv`, `dispatch_branch.csv`, `dispatch_gen.csv` and `run.log` to
 `results/<case>_<metric>_<stage>/`. A config is `key = value` lines; unknown or
 repeated keys are errors.
 
@@ -33,12 +34,12 @@ repeated keys are errors.
 | `stage` | `baseline` | `a2` adds the hybrid AC solve |
 | `flow_domain` | `all` | `rated` drops branches with no rateA from the representation |
 | `q` | `1` | order: mean of the q largest contributions |
-| `weight_multiplier` | `1` | exposure weight as a multiple of lambda* = z0/rho0; `0` gives the plain OPF |
+| `weight_multiplier` | `1` | exposure weight as a multiple of lambda_ref = z0/rho0; `0` gives the plain OPF |
 | `risk_weight` | | absolute exposure weight; overrides `weight_multiplier` |
-| `kappa` | `1` | cuts per iteration |
-| `eta` | `0.5` | stop when rho/rho0 <= 1 - eta |
-| `k_bar` | `25` | iteration limit |
-| `gamma_tol` | `0` | stop when the gap Gamma <= gamma_tol; `0` disables |
+| `kappa` | `5` | cuts per iteration |
+| `eta` | `0.85` | stop when rho/rho0 <= 1 - eta |
+| `k_bar` | `40` | iteration limit |
+| `gamma_tol` | `1e-6` | stop when the gap Gamma <= gamma_tol |
 | `solver_dc`, `solver_ac` | `gurobi`, `knitro` | |
 | `solver_dc_options`, `solver_ac_options` | | extra AMPL solver options, e.g. `numericfocus=3` |
 | `time_limit_s` | `3600` | per solve |
@@ -53,7 +54,7 @@ repeated keys are errors.
 from ropf import AlgorithmConfig, read_matpower, run
 
 net = read_matpower("data/case_ACTIVSg200.m")
-result = run(net, AlgorithmConfig(metric="joule_loss_max", kappa=5, eta=0.85))
+result = run(net, AlgorithmConfig(metric="joule_loss_max"))
 result.final.rho, result.dispatch.Pg
 ```
 
@@ -62,9 +63,8 @@ Sweeping `weight_multiplier` traces the cost-exposure frontier; see below.
 ## Analysis
 
 `analysis/frontier.py` traces the cost-exposure frontier, running Algorithm 1
-once per exposure weight. Its settings are constants at the top of the file --
-the same keys as a config, plus the weights to trace -- so a frontier is edited
-and run, with no config file and no arguments:
+once per exposure weight. Its settings are constants at the top of the file:
+the keys of a config plus the weights to trace. Edit them and run:
 
 ```bash
 python analysis/frontier.py
@@ -75,8 +75,8 @@ Writes `frontier.csv`, `frontier.json`, `frontier.png` and `run.log` to
 `ropf` itself does not.
 
 `analysis/xeval.py` cross-evaluates the representations: it solves under each
-one at a single weight, then scores every resulting dispatch -- and the plain
-OPF -- under all of them. The solves are the whole cost, since scoring a
+one at a single weight, then scores every resulting dispatch, and the plain
+OPF, under all of them. The solves are the whole cost, since scoring a
 representation on a dispatch is arithmetic on Pf. Read the matrix by column: the
 lowest entry should be the diagonal, and an off-diagonal entry above 1 means
 de-risking under one representation raised what another names. Writes
@@ -84,8 +84,8 @@ de-risking under one representation raised what another names. Writes
 
 ## Data
 
-`data/case_ACTIVSg200.m` ships with the repo. See [data/README.md](data/README.md)
-for the other cases.
+`data/case_ACTIVSg200.m` ships with the repo. [data/README.md](data/README.md)
+lists the cases the paper uses and where to get them.
 
 ## Tests
 

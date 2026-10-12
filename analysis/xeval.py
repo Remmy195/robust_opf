@@ -3,7 +3,7 @@
 
 Edit the settings below and run the script; there is no config file and no
 command line.  One run of Algorithm 1 per representation at lambda =
-WEIGHT_MULTIPLIER lambda*, then each of those dispatches -- and the plain OPF --
+WEIGHT_MULTIPLIER lambda_ref, then each of those dispatches, and the plain OPF,
 is scored under all of them.  The solves are the whole cost: scoring a
 representation on a dispatch is arithmetic on Pf, so the off-diagonal entries
 are free.
@@ -52,7 +52,7 @@ Q = 1                           # order: mean of the q largest contributions
 KAPPA = 5                       # cuts per iteration
 ETA = 0.85                      # stop when rho/rho0 <= 1 - eta
 K_BAR = 40                      # iteration limit
-GAMMA_TOL = 1e-6                # stop when the gap Gamma <= gamma_tol; 0 disables
+GAMMA_TOL = 1e-6                # stop when the gap Gamma <= gamma_tol
 
 SOLVER_DC = "gurobi"
 SOLVER_AC = "knitro"            # used only under STAGE = "a2"
@@ -232,7 +232,7 @@ def write_table(log, cells) -> None:
             for column in REPRESENTATIONS}
 
     log("\nexposure relative to the plain OPF"
-        f" (lambda = {WEIGHT_MULTIPLIER:g} lambda*)\n\n")
+        f" (lambda = {WEIGHT_MULTIPLIER:g} lambda_ref)\n\n")
     log(f"{'dispatch':>12}" + "".join(f"{SHORT[c]:>14}" for c in REPRESENTATIONS)
         + f"{'+cost %':>10}\n")
     for row in rows:
@@ -289,7 +289,7 @@ def write_plot(path: str, meta: dict, cells) -> None:
     axes.set_xticklabels([SYMBOL[c] for c in REPRESENTATIONS])
     axes.set_xlabel("evaluated under")
     axes.set_ylabel("exposure, relative to the plain OPF")
-    axes.set_title(rf"{meta['case']}, $\lambda = {WEIGHT_MULTIPLIER:g}\,\lambda^*$,"
+    axes.set_title(rf"{meta['case']}, $\lambda = {WEIGHT_MULTIPLIER:g}\,\lambda^{{\mathrm{{ref}}}}$,"
                    f" stage {meta['stage']}", fontsize=10, pad=8)
     axes.tick_params(labelsize=9)
     axes.margins(y=0.16)

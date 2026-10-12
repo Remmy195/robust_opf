@@ -249,7 +249,7 @@ class Master:
 
     def set_risk_family(self, metric: str) -> None:
         if metric not in RISK_FAMILY:
-            raise ValueError(f"unknown risk functional {metric!r}")
+            raise ValueError(f"unknown exposure representation {metric!r}")
         self.ampl.get_parameter("risk_family").set(RISK_FAMILY[metric])
 
     def set_order(self, q: int, mean_form: Optional[bool] = None) -> None:

@@ -1,8 +1,28 @@
 # Case data
 
-ACTIVSg synthetic grids from the Texas A&M Electric Grid Test Case Repository,
-https://electricgrids.engr.tamu.edu. Only ACTIVSg200 ships here. The manuscript
-used these MATPOWER files; `result.json` records the SHA-256 of the case it ran.
+Only `case_ACTIVSg200.m` ships here. Both families below come from the Electric
+Grid Test Case Repository, https://electricgrids.engr.tamu.edu. Save a case in
+`data/` under the name in the table; `result.json` records the SHA-256 of the
+case it ran.
+
+## EPIGRIDS
+
+The paper's frontier systems.
+
+| File | From the download | SHA-256 |
+|---|---|---|
+| `case_EPINewEngland.m` | `New England/MatPower Cases/Medium/Winter68Tight.m` | `9a01381c3557df10825557f01d8f1cceb06df28ba75f3e6851dbe7e69b551930` |
+| `case_EPIWisconsin.m` | `Wisconsin/Wisconsin_1664.m` | `039df3ac7fcee9add540f99462a9d2667438a6adb7f30b1caf98ace5adbca449` |
+| `case_EPIFlorida.m` | `Florida/Base_Florida_42GW.m` | `677a12456333ae3f62779aea1da7e029abb8379478aad0e6c9f15bf1f52ae930` |
+| `case_EPIWestern.m` | `Western Network/Base_West_Interconnect_121GW.m` | `5545bf06993a5f5735261896f361e631453392239bbdca4f619f732c078bae27` |
+| `case_EPIEastern.m` | `Eastern Network/Base_Eastern_Interconnect_515GW.m` | `5becfa3af0d4e295b7ab259ab62abb0167b7c9e75a02c56798965a169d70abb7` |
+
+Cite: J. M. Snodgrass, "Tractable Algorithms for Constructing Electric Power
+Network Models," PhD thesis, University of Wisconsin-Madison, 2021.
+
+## ACTIVSg
+
+The paper's counterfactual validation uses ACTIVSg10k and ACTIVSg25k.
 
 | File | SHA-256 |
 |---|---|
@@ -13,13 +33,11 @@ used these MATPOWER files; `result.json` records the SHA-256 of the case it ran.
 | `case_ACTIVSg25k.m` | `a4157af7ff1c2f9b73fc1132a80fbdf97659912050ffb35f9259d7e057954b0e` |
 | `case_ACTIVSg70k.m` | `22d815497ccb587d3b7d167c740e8e75a7d509d813c34c186d08dec77f757e08` |
 
-## Licence
-
 Copyright (c) 2017-2018 A.B. Birchfield, T. Xu, K.M. Gegner, K.S. Shetye and
 T.J. Overbye. Creative Commons Attribution 4.0 International,
 http://creativecommons.org/licenses/by/4.0/
 
-Cite when publishing results based on this data:
+Cite:
 
 1. A.B. Birchfield, T. Xu, K.M. Gegner, K.S. Shetye, T.J. Overbye, "Grid
    Structural Characteristics as Validation Criteria for Synthetic Networks,"

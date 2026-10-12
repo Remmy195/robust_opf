@@ -1,4 +1,4 @@
-"""Exposure representations and separation; no solver needed."""
+"""Exposure representations and component selection; no solver needed."""
 
 from contextlib import contextmanager
 

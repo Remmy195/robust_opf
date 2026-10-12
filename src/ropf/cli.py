@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import math
@@ -86,7 +87,35 @@ def solve(path: str, echo: bool = True) -> int:
         with open(os.path.join(outdir, "result.json"), "w") as handle:
             json.dump({"metadata": meta, "config": asdict(config),
                        "result": asdict(result)}, handle, indent=1)
+        with open(os.path.join(outdir, "result.csv"), "w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(asdict(result.iterations[0])))
+            writer.writeheader()
+            writer.writerows(asdict(it) for it in result.iterations)
+        if result.dispatch is not None:
+            write_dispatch_csvs(outdir, network, result.dispatch)
     return 1 if result.termination == "infeasible" else 0
+
+
+def write_dispatch_csvs(outdir: str, network: Network, solution) -> None:
+    with open(os.path.join(outdir, "dispatch_bus.csv"), "w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["bus", "Pd", "Qd", "theta", "v"])
+        for i, bus in network.buses.items():
+            writer.writerow([bus.nodeID, bus.Pd, bus.Qd,
+                             solution.theta.get(i, ""), solution.v.get(i, "")])
+    with open(os.path.join(outdir, "dispatch_branch.csv"), "w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["branch", "from", "to", "rated", "limit", "Pf", "Pt", "Qf", "Qt"])
+        for i, br in network.branches.items():
+            writer.writerow([i, br.id_f, br.id_t, br.constrainedflow, br.limit,
+                             solution.Pf.get(i, ""), solution.Pt.get(i, ""),
+                             solution.Qf.get(i, ""), solution.Qt.get(i, "")])
+    with open(os.path.join(outdir, "dispatch_gen.csv"), "w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["gen", "bus", "Pmin", "Pmax", "Qmin", "Qmax", "Pg", "Qg"])
+        for i, gen in network.gens.items():
+            writer.writerow([i, gen.nodeID, gen.Pmin, gen.Pmax, gen.Qmin, gen.Qmax,
+                             solution.Pg.get(i, ""), solution.Qg.get(i, "")])
 
 
 def metadata(path: str, network: Network, outdir: str) -> Dict[str, Any]:

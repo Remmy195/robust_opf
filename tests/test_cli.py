@@ -41,7 +41,9 @@ def test_solve_writes_result_and_log(tmp_path):
         pytest.skip(f"could not solve: {exc}")
     if code != 0:
         pytest.skip("the master did not solve")
-    assert sorted(os.listdir(outdir)) == ["result.json", "run.log"]
+    assert sorted(os.listdir(outdir)) == [
+        "dispatch_branch.csv", "dispatch_bus.csv", "dispatch_gen.csv",
+        "result.csv", "result.json", "run.log"]
     record = json.loads((outdir / "result.json").read_text())
     assert len(record["metadata"]["case_sha256"]) == 64
     assert record["metadata"]["buses"] == 200

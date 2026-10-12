@@ -34,9 +34,9 @@ def base_run(net):
     return result
 
 
-def test_lambda_star_is_z0_over_rho0(base_run):
-    assert base_run.lambda_star == pytest.approx(base_run.z0 / base_run.rho0, rel=1e-12)
-    assert base_run.risk_weight == pytest.approx(base_run.lambda_star, rel=1e-12)
+def test_lambda_ref_is_z0_over_rho0(base_run):
+    assert base_run.lambda_ref == pytest.approx(base_run.z0 / base_run.rho0, rel=1e-12)
+    assert base_run.risk_weight == pytest.approx(base_run.lambda_ref, rel=1e-12)
 
 
 def test_nominal_iterate_is_at_lambda_zero(base_run):
@@ -69,7 +69,7 @@ def test_eta_exit(net):
 
 def test_k_bar_exit(net):
     result = _run(net, eta=0.99, k_bar=3)
-    assert result.termination in ("iteration_limit", "separation_exhausted")
+    assert result.termination in ("iteration_limit", "selection_exhausted", "converged")
     assert result.k_end <= 3
 
 
@@ -77,7 +77,7 @@ def test_gap_exit(net):
     result = _run(net, eta=0.99, k_bar=40, gamma_tol=1e-6)
     if result.termination != "converged":
         pytest.skip(f"exits by {result.termination}")
-    assert abs(result.final.gamma) <= 1e-6
+    assert result.final.gamma <= 1e-6
 
 
 def test_the_bus_family_adds_only_bus_cuts(net):

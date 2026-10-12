@@ -25,16 +25,16 @@ from ropf.network import CaseFormatError, read_matpower          # noqa: E402
 # Settings.  The keys are those of a ropf config; see the table in README.md.
 ###############################################################################
 
-CASE = "case_ACTIVSg10k"        # a bare name is looked up in data/
+CASE = "case_ACTIVSg200"        # a bare name is looked up in data/
 METRIC = "max_active_flow"      # max_active_flow, joule_loss_max, bus_flow_sum_agg
 STAGE = "baseline"              # baseline, or a2 to add the hybrid AC solve
 FLOW_DOMAIN = "all"             # all, or rated to drop branches with no rateA
 Q = 1                           # order: mean of the q largest contributions
 
 KAPPA = 5                       # cuts per iteration
-ETA = 0.8                      # stop when rho/rho0 <= 1 - eta
-K_BAR = 15                      # iteration limit
-GAMMA_TOL = 1e-6                # stop when the gap Gamma <= gamma_tol; 0 disables
+ETA = 0.85                      # stop when rho/rho0 <= 1 - eta
+K_BAR = 40                      # iteration limit
+GAMMA_TOL = 1e-6                # stop when the gap Gamma <= gamma_tol
 
 SOLVER_DC = "gurobi"
 SOLVER_AC = "knitro"            # used only under STAGE = "a2"
@@ -42,10 +42,8 @@ TIME_LIMIT_S = 3600.0           # per solve
 THREADS = None                  # None leaves the solver's own default
 SOLVER_VERBOSE = False
 
-#: The weights to trace, as multiples of lambda*: the plain OPF, then a
-#: geometric grid over three octaves either side.  A case whose frontier bends
-#: between two of these wants a grid of its own.
-WEIGHTS = (0, 0.001, 0.002, 0.0039, 0.0078, 0.0156, 0.0312, 34)
+#: The weights to trace, as multiples of lambda_ref.
+WEIGHTS = (0, 0.001, 0.003, 0.01, 0.03, 0.1, 0.3, 1)
 
 #: Where the artifacts go.  Empty means results/<case>_<metric>_<stage>_frontier.
 OUTDIR = ""
@@ -82,7 +80,7 @@ class Point:
 
     weight_multiplier: float
     risk_weight: float
-    lambda_star: float
+    lambda_ref: float
     cost: float
     exposure: float
     surrogate: float
@@ -125,7 +123,7 @@ def trace(config: RunConfig, weights, log=None) -> tuple[dict, list[Point]]:
 
     points = []
     for index, multiplier in enumerate(weights, start=1):
-        emit(f"\n=== {index}/{len(weights)}  lambda = {multiplier:g} lambda* ===\n")
+        emit(f"\n=== {index}/{len(weights)}  lambda = {multiplier:g} lambda_ref ===\n")
         # The swept weight wins over both weight keys of the config.
         settings = replace(config.algorithm_config(),
                            weight_multiplier=multiplier, risk_weight=None)
@@ -136,12 +134,12 @@ def trace(config: RunConfig, weights, log=None) -> tuple[dict, list[Point]]:
 
 
 def _point(multiplier: float, result: Result) -> Point:
-    """The reported iterate of a run -- the AC solve under stage a2, else the last."""
+    """The reported iterate of a run: the AC solve under stage a2, else the last."""
     iterate = result.reported
     return Point(
         weight_multiplier=multiplier,
         risk_weight=result.risk_weight,
-        lambda_star=result.lambda_star,
+        lambda_ref=result.lambda_ref,
         cost=iterate.cost,
         exposure=iterate.rho,
         surrogate=iterate.surrogate,
@@ -160,9 +158,7 @@ def _point(multiplier: float, result: Result) -> Point:
 
 
 def mark_dominated(points) -> None:
-    """Flag a point another beats on both axes.  A dominated point is real
-    information -- a loop that stopped at a different k, or an AC solve that
-    found another local solution -- so it is flagged and kept, never dropped."""
+    """Flag a point another beats on both axes; flagged, never dropped."""
     priced = [p for p in points if math.isfinite(p.cost) and math.isfinite(p.exposure)]
     for point in priced:
         point.dominated = any(
@@ -222,7 +218,7 @@ def write_json(path: str, meta: dict, config: RunConfig, points) -> None:
 
 def write_table(log, points) -> None:
     """The curve as read: what each weight costs and what it buys."""
-    log(f"\n{'lambda/lambda*':>14} {'cost':>14} {'+cost %':>9}"
+    log(f"\n{'w':>14} {'cost':>14} {'+cost %':>9}"
         f" {'exposure':>12} {'tau':>8} {'k':>4}  termination\n")
     for point in points:
         flag = "  *dominated" if point.dominated else ""
@@ -276,7 +272,7 @@ def write_plot(path: str, meta: dict, points) -> None:
 
     deepest = curve[0] if curve else None
     if deepest is not None and deepest is not baseline:
-        axes.annotate(rf"$\lambda = {deepest.weight_multiplier:g}\,\lambda^*$",
+        axes.annotate(rf"$\lambda = {deepest.weight_multiplier:g}\,\lambda^{{\mathrm{{ref}}}}$",
                       (_kept(deepest), _overhead(deepest)),
                       textcoords="offset points", xytext=(10, 7),
                       fontsize=8, color=CURVE_COLOR)

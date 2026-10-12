@@ -27,14 +27,14 @@ class AlgorithmConfig:
     q: int = 1
     weight_multiplier: float = 1.0
     risk_weight: Optional[float] = None
-    kappa: int = 1
-    eta: float = 0.5
-    k_bar: int = 25
-    gamma_tol: float = 0.0
+    kappa: int = 5
+    eta: float = 0.85
+    k_bar: int = 40
+    gamma_tol: float = 1e-6
 
     def __post_init__(self) -> None:
         if self.metric not in risk.METRICS:
-            raise ValueError(f"unknown risk functional {self.metric!r}; "
+            raise ValueError(f"unknown exposure representation {self.metric!r}; "
                              f"expected one of {list(risk.METRICS)}")
         if self.stage not in STAGES:
             raise ValueError(f"unknown stage {self.stage!r}; "
@@ -55,7 +55,7 @@ class AlgorithmConfig:
         if self.gamma_tol < 0.0:
             raise ValueError(f"gamma_tol cannot be negative, got {self.gamma_tol}")
         if self.weight_multiplier < 0 or (self.risk_weight or 0.0) < 0:
-            raise ValueError("the risk weight cannot be negative")
+            raise ValueError("the exposure weight cannot be negative")
 
 
 @dataclass
@@ -83,7 +83,7 @@ class Result:
     case: str
     metric: str
     stage: str
-    lambda_star: float
+    lambda_ref: float
     risk_weight: float
     weight_multiplier: Optional[float]
     z0: float
@@ -122,7 +122,7 @@ def run(network: Network,
     emit = log or _noop
     started = time.time()
     emit(f"\n{config.stage}: {config.metric} (q = {config.q}), "
-         f"lambda = {config.weight_multiplier:g} lambda*, kappa = "
+         f"lambda = {config.weight_multiplier:g} lambda_ref, kappa = "
          f"{config.kappa}, eta = {config.eta:g}, k_bar = {config.k_bar}\n")
 
     budget = config.kappa * config.k_bar
@@ -161,7 +161,7 @@ def run_loop(network: Network,
         stage=config.stage,
         flow_domain=config.flow_domain,
         q=config.q,
-        lambda_star=float("nan"),
+        lambda_ref=float("nan"),
         risk_weight=float("nan"),
         weight_multiplier=(None if config.risk_weight is not None
                            else config.weight_multiplier),
@@ -191,11 +191,11 @@ def run_loop(network: Network,
         result.termination_detail = f"rho0 = {rho0:g}"
         return result
 
-    result.lambda_star = result.z0 / rho0
+    result.lambda_ref = result.z0 / rho0
     risk_weight = (float(config.risk_weight) if config.risk_weight is not None
-                   else config.weight_multiplier * result.lambda_star)
+                   else config.weight_multiplier * result.lambda_ref)
     result.risk_weight = risk_weight
-    emit(f"lambda* = {result.lambda_star:.6f}, lambda = {risk_weight:.6f}\n")
+    emit(f"lambda_ref = {result.lambda_ref:.6f}, lambda = {risk_weight:.6f}\n")
 
     if risk_weight == 0.0:
         # Phi is free at lambda = 0, so no cut can move the dispatch.
@@ -219,7 +219,7 @@ def run_loop(network: Network,
         else:
             added = master.add_line_cuts(selected)
         if added == 0:
-            result.termination = "separation_exhausted"
+            result.termination = "selection_exhausted"
             result.termination_detail = f"no new cut at k = {k}"
             break
 
@@ -249,7 +249,7 @@ def run_loop(network: Network,
             result.termination = "eta_target"
             result.termination_detail = f"rho/rho0 = {iterate.ratio:.6f} at k = {k}"
             break
-        if config.gamma_tol > 0.0 and abs(iterate.gamma) <= config.gamma_tol:
+        if iterate.gamma <= config.gamma_tol:
             result.termination = "converged"
             result.termination_detail = f"Gamma = {iterate.gamma:.3e} at k = {k}"
             break

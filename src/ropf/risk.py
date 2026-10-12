@@ -1,4 +1,4 @@
-"""Exposure representations of order q (eq:phibus, eq:phiflow, eq:phijoule) and their separation."""
+"""Exposure representations of order q (eq:phibus, eq:phiflow, eq:phijoule) and component selection."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ def evaluate(metric: str,
              flow_domain: str = "all",
              q: int = 1) -> RiskEval:
     if metric not in METRICS:
-        raise ValueError(f"unknown risk functional {metric!r}; "
+        raise ValueError(f"unknown exposure representation {metric!r}; "
                          f"expected one of {list(METRICS)}")
     if flow_domain not in FLOW_DOMAINS:
         raise ValueError(f"unknown flow domain {flow_domain!r}; "

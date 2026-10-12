@@ -237,11 +237,13 @@ def _gencost(net: Network, rows) -> None:
     for count, row in enumerate(rows, start=1):
         if int(row[0]) != 2:
             raise CaseFormatError(f"generator {count}: only polynomial cost (model 2) is supported")
-        degree = int(row[3]) - 1
+        degree, first = int(row[3]) - 1, 4
+        while degree > 2 and float(row[first]) == 0.0:
+            degree, first = degree - 1, first + 1
         if not 0 <= degree <= 2:
             raise CaseFormatError(f"generator {count}: cost degree {degree}, only 0 to 2 supported")
         cost = [0.0, 0.0, 0.0]
         for j in range(degree + 1):
             power = degree - j
-            cost[2 - power] = float(row[4 + j]) * base ** power
+            cost[2 - power] = float(row[first + j]) * base ** power
         net.gens[count].costvector = cost

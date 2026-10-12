@@ -20,7 +20,7 @@ def write(tmp_path, text):
     ("kappa = 2.5\n", "expected int"),
     ("eta = half\n", "expected float"),
     ("solver_verbose = maybe\n", "expected bool"),
-    ("metric = max_line_loading\n", "unknown risk functional"),
+    ("metric = max_line_loading\n", "unknown exposure representation"),
     ("stage = a3\n", "unknown stage"),
     ("flow_domain = unrated\n", "unknown flow domain"),
     ("eta = 1.5\n", "eta"),

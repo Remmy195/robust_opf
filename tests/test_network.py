@@ -5,8 +5,8 @@ import os
 
 import pytest
 
-from conftest import FIXTURES
-from ropf.network import Branch
+from conftest import CASE, FIXTURES
+from ropf.network import Branch, CaseFormatError, read_matpower
 
 TOL = 1e-12
 
@@ -71,6 +71,26 @@ def test_generators_and_costs(net, dump):
         expected = (float(row["c2"]) * base ** 2, float(row["c1"]) * base,
                     float(row["c0"]))
         assert all(close(a, b) for a, b in zip(gen.costvector, expected))
+
+
+def _recost(tmp_path, cubic):
+    with open(CASE) as handle:
+        text = handle.read()
+    text = text.replace("\t2\t0\t0\t3\t", f"\t2\t0\t0\t4\t{cubic}\t")
+    path = tmp_path / "case_cubic.m"
+    path.write_text(text)
+    return str(path)
+
+
+def test_cubic_form_with_zero_leading_term(net, tmp_path):
+    cubic = read_matpower(_recost(tmp_path, "0"))
+    for count, gen in net.gens.items():
+        assert cubic.gens[count].costvector == gen.costvector
+
+
+def test_genuinely_cubic_cost_is_an_error(tmp_path):
+    with pytest.raises(CaseFormatError):
+        read_matpower(_recost(tmp_path, "0.5"))
 
 
 def test_zero_rate_a_becomes_big_m(net, dump):

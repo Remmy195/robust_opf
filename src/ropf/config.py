@@ -31,10 +31,10 @@ class RunConfig:
     q: int = 1
     weight_multiplier: float = 1.0
     risk_weight: Optional[float] = None
-    kappa: int = 1
-    eta: float = 0.5
-    k_bar: int = 25
-    gamma_tol: float = 0.0
+    kappa: int = 5
+    eta: float = 0.85
+    k_bar: int = 40
+    gamma_tol: float = 1e-6
     solver_dc: str = "gurobi"
     solver_ac: str = "knitro"
     solver_dc_options: str = ""
