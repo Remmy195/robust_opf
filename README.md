@@ -1,7 +1,7 @@
 # ropf
 
 Risk-aware optimal power flow by cutting planes. Implements Algorithm 1 of
-*Risk-aware optimal power flow* on the DC master (M), and the hybrid stage that
+*De-risking Optimal Power Flows for Network Resilience* on the DC master (M), and the hybrid stage that
 solves the AC master (M^ac) once on the DC cut pool.
 
 ## Requirements
@@ -77,6 +77,12 @@ Writes `frontier.csv`, `frontier.json`, `frontier.png` and `run.log` to
 
 `data/case_ACTIVSg200.m` ships with the repo. [data/README.md](data/README.md)
 lists the cases the paper uses and where to get them.
+
+## Cite
+
+R. Akinwonmi, D. Bienstock, A. M. Newman, "De-risking Optimal Power Flows for
+Network Resilience," manuscript, 2026. [CITATION.cff](CITATION.cff) has the
+same entry for GitHub's "Cite this repository".
 
 ## Licence
 

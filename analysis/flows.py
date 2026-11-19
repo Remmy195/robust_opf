@@ -24,7 +24,7 @@ from ropf.network import CaseFormatError, read_matpower          # noqa: E402
 # Settings.  The keys are those of a ropf config; see the table in README.md.
 ###############################################################################
 
-CASE = "pglib_opf_case30000_goc__api"        # a bare name is looked up in data/
+CASE = "case_ACTIVSg200"        # a bare name is looked up in data/
 METRIC = "joule_loss_max"      # max_active_flow, joule_loss_max, bus_flow_sum_agg
 STAGE = "baseline"              # baseline, or a2 to add the hybrid AC solve
 FLOW_DOMAIN = "all"             # all, or rated to drop branches with no rateA

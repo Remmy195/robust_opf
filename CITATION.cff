@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the paper below."
+title: "ropf: risk-aware optimal power flow by cutting planes"
+version: 1.0.0
+license: MIT
+repository-code: "https://github.com/Remmy195/robust_opf"
+authors:
+  - family-names: Akinwonmi
+    given-names: Remi
+    affiliation: Colorado School of Mines
+preferred-citation:
+  type: unpublished
+  title: "De-risking Optimal Power Flows for Network Resilience"
+  year: 2026
+  authors:
+    - family-names: Akinwonmi
+      given-names: Remi
+      affiliation: Colorado School of Mines
+    - family-names: Bienstock
+      given-names: Daniel
+      affiliation: Columbia University
+    - family-names: Newman
+      given-names: Alexandra M.
+      affiliation: Colorado School of Mines
