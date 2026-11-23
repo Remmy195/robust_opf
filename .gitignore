@@ -5,3 +5,5 @@ __pycache__/
 results/
 data/*.m
 !data/case_ACTIVSg200.m
+site/
+.cache/

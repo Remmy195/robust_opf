@@ -1,0 +1,77 @@
+site_name: ropf
+site_description: Risk-aware optimal power flow by cutting planes
+site_url: https://remmy195.github.io/robust_opf/
+repo_url: https://github.com/Remmy195/robust_opf
+repo_name: Remmy195/robust_opf
+edit_uri: edit/master/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.footer
+    - navigation.indexes
+    - content.code.copy
+    - search.suggest
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle: {icon: material/weather-night, name: Dark mode}
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle: {icon: material/weather-sunny, name: Light mode}
+
+nav:
+  - Home: index.md
+  - Tutorials:
+      - tutorials/index.md
+      - A first de-risked dispatch: tutorials/first_dispatch.ipynb
+      - Tracing the frontier: tutorials/frontier.md
+      - The AC stage: tutorials/ac_stage.md
+  - How-to guides:
+      - howto/index.md
+      - Choose an exposure representation: howto/representation.md
+      - Choose the order q: howto/order_q.md
+      - Set the stopping rule: howto/stopping.md
+      - Add a case: howto/add_case.md
+      - Run on a cluster: howto/cluster.md
+  - Explanation:
+      - explanation/index.md
+      - Introductory theory: explanation/theory_intro.md
+      - Exposure: explanation/exposure.md
+  - Examples:
+      - examples/index.md
+      - ACTIVSg10k: examples/activsg10k.md
+  - API reference: reference.md
+  - Citing: citing.md
+
+plugins:
+  - search
+  - mkdocs-jupyter:
+      execute: false
+      include_source: true
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            show_source: false
+            members_order: source
+            docstring_style: google
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed: {alternate_style: true}
+  - pymdownx.arithmatex: {generic: true}
+  - toc: {permalink: true}
+  - tables
+
+extra_javascript:
+  - javascripts/katex.js
+  - https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js
+  - https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js
+extra_css:
+  - https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css
